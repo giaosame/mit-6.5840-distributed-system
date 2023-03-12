@@ -1,70 +1,88 @@
 package mr
 
-import "log"
+import (
+	"fmt"
+	"log"
+	"sync"
+)
 import "net"
 import "os"
 import "net/rpc"
 import "net/http"
 
-
 type Coordinator struct {
-	// Your definitions here.
+	files []string
+	mtx   sync.Mutex
 
+	nMap      int
+	mapIdx    int
+	nReduce   int
+	reduceIdx int
 }
 
-// Your code here -- RPC handlers for the worker to call.
+// RPC handlers for the worker to call.
 
-//
-// an example RPC handler.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func (c *Coordinator) Example(args *ExampleArgs, reply *ExampleReply) error {
-	reply.Y = args.X + 1
+// GetNReduce returns nReduce
+func (c *Coordinator) GetNReduce(args *DummyArgs, reply *ReduceNumReply) error {
+	reply.Num = c.nReduce
 	return nil
 }
 
+// GetMapTask returns a map task including the filename
+func (c *Coordinator) GetMapTask(args *DummyArgs, reply *TaskReply) error {
+	c.mtx.Lock()
+	idx := c.mapIdx
+	c.mapIdx++
+	c.mtx.Unlock()
 
-//
-// start a thread that listens for RPCs from worker.go
-//
-func (c *Coordinator) server() {
-	rpc.Register(c)
+	if idx < c.nMap {
+		reply.Filename = c.files[idx]
+	}
+	return nil
+}
+
+// serve starts a thread that listens for RPCs from worker.go
+func (c *Coordinator) serve() {
+	if err := rpc.Register(c); err != nil {
+		fmt.Printf("[Coordinator.serve] failed to register coordinator for rpc: %v\n", err)
+		return
+	}
 	rpc.HandleHTTP()
+
 	//l, e := net.Listen("tcp", ":1234")
-	sockname := coordinatorSock()
-	os.Remove(sockname)
-	l, e := net.Listen("unix", sockname)
+	sock := coordinatorSock()
+	os.Remove(sock)
+	l, e := net.Listen("unix", sock)
 	if e != nil {
 		log.Fatal("listen error:", e)
 	}
+
+	fmt.Printf("[Coordinator.serve] begin to listen %s\n", sock)
 	go http.Serve(l, nil)
 }
 
-//
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
-//
 func (c *Coordinator) Done() bool {
 	ret := false
 
 	// Your code here.
 
-
 	return ret
 }
 
-//
-// create a Coordinator.
+// MakeCoordinator creates a Coordinator.
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
-//
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
-	c := Coordinator{}
+	c := Coordinator{
+		files:   files,
+		nMap:    len(files),
+		nReduce: nReduce,
+	}
 
-	// Your code here.
+	//TODO
 
-
-	c.server()
+	c.serve()
 	return &c
 }

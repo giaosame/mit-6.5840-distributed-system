@@ -1,23 +1,22 @@
+// simple sequential MapReduce.
+// * go build -buildmode=plugin ../mrapps/wc.go
+// * go run mrsequential.go wc.so pg*.txt
+
 package main
 
-//
-// simple sequential MapReduce.
-//
-// go run mrsequential.go wc.so pg*.txt
-//
+import (
+	"fmt"
+	"io/ioutil"
+	"log"
+	"os"
+	"sort"
 
-import "fmt"
-import "6.5840/mr"
-import "plugin"
-import "os"
-import "log"
-import "io/ioutil"
-import "sort"
+	"6.5840/common"
+)
 
-// for sorting by key.
-type ByKey []mr.KeyValue
+// ByKey for sorting by key
+type ByKey []common.KeyValue
 
-// for sorting by key.
 func (a ByKey) Len() int           { return len(a) }
 func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
@@ -28,14 +27,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	mapf, reducef := loadPlugin(os.Args[1])
+	mapf, reducef := common.LoadPlugin(os.Args[1])
 
-	//
-	// read each input file,
-	// pass it to Map,
+	// read each input file, pass it to Map,
 	// accumulate the intermediate Map output.
-	//
-	intermediate := []mr.KeyValue{}
+	var intermediate []common.KeyValue
 	for _, filename := range os.Args[2:] {
 		file, err := os.Open(filename)
 		if err != nil {
@@ -50,12 +46,9 @@ func main() {
 		intermediate = append(intermediate, kva...)
 	}
 
-	//
 	// a big difference from real MapReduce is that all the
 	// intermediate data is in one place, intermediate[],
 	// rather than being partitioned into NxM buckets.
-	//
-
 	sort.Sort(ByKey(intermediate))
 
 	oname := "mr-out-0"
@@ -84,25 +77,4 @@ func main() {
 	}
 
 	ofile.Close()
-}
-
-// load the application Map and Reduce functions
-// from a plugin file, e.g. ../mrapps/wc.so
-func loadPlugin(filename string) (func(string, string) []mr.KeyValue, func(string, []string) string) {
-	p, err := plugin.Open(filename)
-	if err != nil {
-		log.Fatalf("cannot load plugin %v", filename)
-	}
-	xmapf, err := p.Lookup("Map")
-	if err != nil {
-		log.Fatalf("cannot find Map in %v", filename)
-	}
-	mapf := xmapf.(func(string, string) []mr.KeyValue)
-	xreducef, err := p.Lookup("Reduce")
-	if err != nil {
-		log.Fatalf("cannot find Reduce in %v", filename)
-	}
-	reducef := xreducef.(func(string, []string) string)
-
-	return mapf, reducef
 }
