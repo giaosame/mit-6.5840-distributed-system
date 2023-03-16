@@ -1,7 +1,6 @@
 package mr
 
 import (
-	"fmt"
 	"log"
 	"sync"
 )
@@ -14,7 +13,6 @@ type Coordinator struct {
 	files []string
 	mtx   sync.Mutex
 
-	nMap      int
 	mapIdx    int
 	nReduce   int
 	reduceIdx int
@@ -22,9 +20,10 @@ type Coordinator struct {
 
 // RPC handlers for the worker to call.
 
-// GetNReduce returns nReduce
-func (c *Coordinator) GetNReduce(args *DummyArgs, reply *ReduceNumReply) error {
-	reply.Num = c.nReduce
+// GetData returns nReduce and the number of files to be processed
+func (c *Coordinator) GetData(args *DummyArgs, reply *CoordinatorDataReply) error {
+	reply.NReduce = c.nReduce
+	reply.NumFiles = len(c.files)
 	return nil
 }
 
@@ -35,7 +34,7 @@ func (c *Coordinator) GetMapTask(args *DummyArgs, reply *TaskReply) error {
 	c.mapIdx++
 	c.mtx.Unlock()
 
-	if idx < c.nMap {
+	if idx < len(c.files) {
 		reply.Filename = c.files[idx]
 	}
 	return nil
@@ -44,21 +43,23 @@ func (c *Coordinator) GetMapTask(args *DummyArgs, reply *TaskReply) error {
 // serve starts a thread that listens for RPCs from worker.go
 func (c *Coordinator) serve() {
 	if err := rpc.Register(c); err != nil {
-		fmt.Printf("[Coordinator.serve] failed to register coordinator for rpc: %v\n", err)
+		log.Fatal("[Coordinator.serve] failed to register coordinator for rpc:", err)
 		return
 	}
 	rpc.HandleHTTP()
 
 	//l, e := net.Listen("tcp", ":1234")
 	sock := coordinatorSock()
-	os.Remove(sock)
-	l, e := net.Listen("unix", sock)
-	if e != nil {
-		log.Fatal("listen error:", e)
+	if err := os.Remove(sock); err != nil {
+		log.Println("[Coordinator.serve] failed to remove:", err)
+	}
+	listener, err := net.Listen("unix", sock)
+	if err != nil {
+		log.Fatalf("[Coordinator.serve] failed to listen the socket %s: %v", sock, err)
 	}
 
-	fmt.Printf("[Coordinator.serve] begin to listen %s\n", sock)
-	go http.Serve(l, nil)
+	log.Printf("[Coordinator.serve] begin to listen %s\n", sock)
+	go http.Serve(listener, nil)
 }
 
 // main/mrcoordinator.go calls Done() periodically to find out
@@ -77,11 +78,8 @@ func (c *Coordinator) Done() bool {
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{
 		files:   files,
-		nMap:    len(files),
 		nReduce: nReduce,
 	}
-
-	//TODO
 
 	c.serve()
 	return &c

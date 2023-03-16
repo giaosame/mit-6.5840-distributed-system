@@ -7,8 +7,9 @@ import (
 
 type DummyArgs struct{}
 
-type ReduceNumReply struct {
-	Num int
+type CoordinatorDataReply struct {
+	NReduce  int
+	NumFiles int
 }
 
 type TaskReply struct {

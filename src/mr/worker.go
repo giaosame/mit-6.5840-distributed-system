@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"6.5840/common"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -10,8 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-
-	"6.5840/common"
+	"time"
 )
 
 type Worker struct {
@@ -35,48 +35,38 @@ func MakeWorker(mapFunc func(string, string) []common.KeyValue, reduceFunc func(
 }
 
 func (w *Worker) MapReduce() {
-	var wg sync.WaitGroup
-	mapDone := false
+	wg := sync.WaitGroup{}
 	//reduceDone := false
-	doneChan := make(chan bool, 1)
-	nReduce := getReduceNumber()
+	nReduce, numFiles := getCoordinatorData()
 	if nReduce < 0 {
 		return
 	}
-	log.Println("nReduce =", nReduce)
+	log.Printf("[Worker.MapReduce] begin to do MapReduce... [%d, %d]", nReduce, numFiles)
 
 	// mapping stage
-	for i := 0; ; i++ {
-		select {
-		case <-doneChan:
-			mapDone = true
-		default:
-			go w.Map(i, nReduce, doneChan, &wg)
-		}
-
-		if mapDone {
-			log.Println("[Worker.work] all map tasks have been assigned and running")
-			break
-		}
+	for i := 0; i < numFiles; i++ {
+		go w.Map(i, nReduce, &wg)
 	}
 	wg.Wait()
+
+	time.Sleep(time.Second * 3)
 }
 
-func (w *Worker) Map(idx, nReduce int, done chan bool, wg *sync.WaitGroup) {
+func (w *Worker) Map(idx, nReduce int, wg *sync.WaitGroup) {
 	filename := getMapTask()
-	if len(filename) == 0 {
-		done <- true
-	}
 	wg.Add(1)
+	log.Println("[Worker.Map] begin to map the file", filename)
 
 	var files []*os.File
 	defer func() {
-		if files != nil {
+		if files == nil {
 			return
 		}
 		for _, file := range files {
 			file.Close()
 		}
+		log.Println("[Worker.Map] completed to map the file", filename)
+		wg.Done()
 	}()
 
 	var encoders []*json.Encoder
@@ -84,7 +74,7 @@ func (w *Worker) Map(idx, nReduce int, done chan bool, wg *sync.WaitGroup) {
 		interFilename := filepath.Join(common.IntermediateDir, fmt.Sprintf("mr-%d-%d", idx, y))
 		file, err := os.Create(interFilename)
 		if err != nil {
-			log.Printf("failed to create the intermediate file %s: %v", interFilename, err)
+			log.Printf("[Worker.Map] failed to create the intermediate file %s: %v", interFilename, err)
 			return
 		}
 		files = append(files, file)
@@ -93,13 +83,12 @@ func (w *Worker) Map(idx, nReduce int, done chan bool, wg *sync.WaitGroup) {
 
 	kva := w.convertFileToKVArray(filename)
 	for _, kv := range kva {
-		hashIdx := ihash(kv.Key) & nReduce
+		hashIdx := ihash(kv.Key) % nReduce
 		encoder := encoders[hashIdx]
 		if err := encoder.Encode(kv); err != nil {
-			log.Printf("failed to encode the KV pair (key = %s, val = %s): %v", kv.Key, kv.Value, err)
+			log.Printf("[Worker.Map] failed to encode the KV pair (key = %s, val = %s): %v", kv.Key, kv.Value, err)
 		}
 	}
-	wg.Done()
 }
 
 func (w *Worker) convertFileToKVArray(filename string) []common.KeyValue {
@@ -122,7 +111,7 @@ func getMapTask() string {
 	args := DummyArgs{}
 	reply := TaskReply{}
 
-	ok := call("Coordinator.GetMapTask", args, reply)
+	ok := call("Coordinator.GetMapTask", &args, &reply)
 	if !ok {
 		log.Printf("[getMapTask] call failed!")
 		return ""
@@ -130,35 +119,16 @@ func getMapTask() string {
 	return reply.Filename
 }
 
-func getReduceNumber() int {
+func getCoordinatorData() (int, int) {
 	args := DummyArgs{}
-	reply := ReduceNumReply{}
+	reply := CoordinatorDataReply{}
 
-	ok := call("Coordinator.GetNReduce", &args, &reply)
+	ok := call("Coordinator.GetData", &args, &reply)
 	if !ok {
-		log.Printf("[getReduceNumber] call failed!")
-		return -1
+		log.Printf("[getCoordinatorData] call failed!")
+		return -1, 0
 	}
-	return reply.Num
-}
-
-func CallTest() {
-
-	// declare a reply structure.
-	args := DummyArgs{}
-	reply := TestReply{}
-
-	// send the RPC request, wait for the reply.
-	// the "Coordinator.Example" tells the
-	// receiving server that we'd like to call
-	// the Example() method of struct Coordinator.
-	ok := call("Coordinator.Test", &args, &reply)
-	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply.Val = %v\n", reply.Val)
-	} else {
-		fmt.Printf("call failed!\n")
-	}
+	return reply.NReduce, reply.NumFiles
 }
 
 // call sends an RPC request to the coordinator, wait for the response.
@@ -168,7 +138,7 @@ func call(rpcName string, args interface{}, reply interface{}) bool {
 	sock := coordinatorSock()
 	cli, err := rpc.DialHTTP("unix", sock)
 	if err != nil {
-		log.Fatal("[call] failed to call DialHTTP: ", err)
+		log.Println("[call] failed to call DialHTTP:", err)
 		return false
 	}
 	defer cli.Close()
