@@ -5,19 +5,36 @@ import (
 	"os"
 )
 
+const (
+	TaskTypeVoid = iota
+	TaskTypeMap
+	TaskTypeReduce
+)
+
+const (
+	TaskStatusReady = iota
+	TaskStatusDoing
+	TaskStatusDone
+)
+
 type DummyArgs struct{}
 
-type CoordinatorDataReply struct {
-	NReduce  int
-	NumFiles int
+type DummyReply struct{}
+
+type Task struct {
+	Idx    int
+	Type   uint8
+	Status uint8
 }
 
 type TaskReply struct {
-	Filename string
+	Task      *Task
+	Filenames []string
 }
 
-type TestReply struct {
-	Val int
+type ReportArgs struct {
+	Task           *Task
+	InterFilenames []string
 }
 
 // Add your RPC definitions here.
