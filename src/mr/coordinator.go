@@ -2,42 +2,136 @@ package mr
 
 import (
 	"log"
+	"net"
+	"net/http"
+	"net/rpc"
+	"os"
 	"sync"
 )
-import "net"
-import "os"
-import "net/rpc"
-import "net/http"
+
+const MappersPerFile = 1
+
+const (
+	StageMapping = iota
+	StageReducing
+	StageDone
+)
 
 type Coordinator struct {
-	files []string
-	mtx   sync.Mutex
+	files     []string
+	stageMtx  sync.Mutex
+	indexMtx  sync.Mutex
+	reportMtx sync.Mutex
 
-	mapIdx    int
-	nReduce   int
-	reduceIdx int
+	stage          int
+	mapIdx         int
+	nMap           int
+	nMapDone       int
+	reduceIdx      int
+	nReduce        int
+	nReduceDone    int
+	mappersPerFile int
+
+	interMap map[int][]string
 }
 
 // RPC handlers for the worker to call.
 
-// GetData returns nReduce and the number of files to be processed
-func (c *Coordinator) GetData(args *DummyArgs, reply *CoordinatorDataReply) error {
-	reply.NReduce = c.nReduce
-	reply.NumFiles = len(c.files)
+// GetNReduce returns nReduce
+func (c *Coordinator) GetNReduce(args *DummyArgs, reply *int) error {
+	*reply = c.nReduce
 	return nil
 }
 
-// GetMapTask returns a map task including the filename
-func (c *Coordinator) GetMapTask(args *DummyArgs, reply *TaskReply) error {
-	c.mtx.Lock()
+// AssignTask returns a map task including the filename
+func (c *Coordinator) AssignTask(args *DummyArgs, reply *TaskReply) error {
+	var stage int
+	c.stageMtx.Lock()
+	switch c.stage {
+	case StageMapping:
+		stage = StageMapping
+	case StageReducing:
+		stage = StageReducing
+	case StageDone:
+		stage = StageDone
+	}
+	c.stageMtx.Unlock()
+
+	c.assignTask(stage, reply)
+	return nil
+}
+
+func (c *Coordinator) ReportTask(args *ReportArgs, reply *DummyReply) error {
+	task := args.Task
+	switch task.Type {
+	case TaskTypeMap:
+		if task.Status == TaskStatusDone {
+			c.reportMtx.Lock()
+			c.nMapDone++
+			curNumMapDone := c.nMapDone
+			c.reportMtx.Unlock()
+			if curNumMapDone == c.nMap {
+				c.stageMtx.Lock()
+				c.stage = StageReducing // begin to do reducing
+				c.stageMtx.Unlock()
+			}
+			return nil
+		}
+	case TaskTypeReduce:
+		if task.Status == TaskStatusDone {
+			c.reportMtx.Lock()
+			c.nReduceDone++
+			curNumReduceDone := c.nReduceDone
+			c.reportMtx.Unlock()
+			if curNumReduceDone == c.nReduce {
+				c.stageMtx.Lock()
+				c.stage = StageDone
+				c.stageMtx.Unlock()
+			}
+			return nil
+		}
+	}
+
+	// otherwise, it means task failed
+	// TODO: restart a task
+	return nil
+}
+
+func (c *Coordinator) assignTask(stage int, reply *TaskReply) {
+	reply.Task = &Task{Type: TaskTypeVoid}
+	switch stage {
+	case StageMapping:
+		c.assignMapTask(reply)
+	case StageReducing:
+		c.assignReduceTask(reply)
+	default:
+		break
+	}
+}
+
+func (c *Coordinator) assignMapTask(reply *TaskReply) {
+	c.indexMtx.Lock()
 	idx := c.mapIdx
 	c.mapIdx++
-	c.mtx.Unlock()
-
-	if idx < len(c.files) {
-		reply.Filename = c.files[idx]
+	c.indexMtx.Unlock()
+	if idx >= c.nMap {
+		return
 	}
-	return nil
+
+	reply.Task.Idx = idx
+	reply.Task.Type = TaskTypeMap
+	reply.Task.Status = TaskStatusReady
+	reply.Filenames = append(reply.Filenames, c.files[idx])
+}
+
+func (c *Coordinator) assignReduceTask(reply *TaskReply) {
+	c.indexMtx.Lock()
+	idx := c.reduceIdx
+	c.reduceIdx++
+	c.indexMtx.Unlock()
+	if idx >= c.nReduce {
+		return
+	}
 }
 
 // serve starts a thread that listens for RPCs from worker.go
@@ -62,14 +156,9 @@ func (c *Coordinator) serve() {
 	go http.Serve(listener, nil)
 }
 
-// main/mrcoordinator.go calls Done() periodically to find out
-// if the entire job has finished.
+// Done is called by main/mrcoordinator.go periodically to find out if the entire job has finished
 func (c *Coordinator) Done() bool {
-	ret := false
-
-	// Your code here.
-
-	return ret
+	return c.stage == StageDone
 }
 
 // MakeCoordinator creates a Coordinator.
@@ -77,9 +166,13 @@ func (c *Coordinator) Done() bool {
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{
-		files:   files,
-		nReduce: nReduce,
+		stage:          StageMapping,
+		mappersPerFile: MappersPerFile,
+		files:          files,
+		nReduce:        nReduce,
+		interMap:       make(map[int][]string),
 	}
+	c.nMap = c.mappersPerFile * len(c.files)
 
 	c.serve()
 	return &c

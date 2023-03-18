@@ -1,7 +1,6 @@
 package mr
 
 import (
-	"6.5840/common"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
@@ -12,9 +11,14 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"6.5840/common"
 )
 
+const MapReduceSleepFactor = 30
+
 type Worker struct {
+	nReduce    int
 	mapFunc    func(string, string) []common.KeyValue
 	reduceFunc func(string, []string) string
 }
@@ -35,46 +39,70 @@ func MakeWorker(mapFunc func(string, string) []common.KeyValue, reduceFunc func(
 }
 
 func (w *Worker) MapReduce() {
+	stage := StageMapping
+	allTasksAssigned := make(chan bool, 1)
 	wg := sync.WaitGroup{}
-	//reduceDone := false
-	nReduce, numFiles := getCoordinatorData()
-	if nReduce < 0 {
+
+	w.nReduce = getNReduce()
+	if w.nReduce < 0 {
 		return
 	}
-	log.Printf("[Worker.MapReduce] begin to do MapReduce... [%d, %d]", nReduce, numFiles)
 
-	// mapping stage
-	for i := 0; i < numFiles; i++ {
-		go w.Map(i, nReduce, &wg)
+	for {
+		select {
+		case <-allTasksAssigned:
+			wg.Wait()
+			stage++
+		default:
+			go w.work(allTasksAssigned, &wg)
+		}
+
+		if stage >= StageReducing {
+			break
+		}
+		time.Sleep(MapReduceSleepFactor * time.Millisecond)
 	}
-	wg.Wait()
-
-	time.Sleep(time.Second * 3)
+	log.Println("[Worker.MapReduce] completed successfully!")
+	time.Sleep(time.Second * 5)
 }
 
-func (w *Worker) Map(idx, nReduce int, wg *sync.WaitGroup) {
-	filename := getMapTask()
+func (w *Worker) work(waitChan chan bool, wg *sync.WaitGroup) {
+	taskReply := getTask()
+	log.Println(taskReply)
+	if taskReply == nil { // ignores tasks which failed to call rpc
+		return
+	}
+
+	switch taskReply.Task.Type {
+	case TaskTypeVoid:
+		waitChan <- true
+	case TaskTypeMap:
+		w.doMapWork(taskReply.Task, taskReply.Filenames[0], wg)
+	case TaskTypeReduce:
+		w.doReduceWork()
+	}
+}
+
+func (w *Worker) doMapWork(task *Task, filename string, wg *sync.WaitGroup) {
 	wg.Add(1)
-	log.Println("[Worker.Map] begin to map the file", filename)
+	task.Status = TaskStatusDoing
+	log.Println("[Worker.doMapWork] begin to map the file", filename)
 
 	var files []*os.File
 	defer func() {
-		if files == nil {
-			return
-		}
 		for _, file := range files {
 			file.Close()
 		}
-		log.Println("[Worker.Map] completed to map the file", filename)
+		log.Println("[Worker.doMapWork] completed to map the file", filename)
 		wg.Done()
 	}()
 
 	var encoders []*json.Encoder
-	for y := 0; y < nReduce; y++ {
-		interFilename := filepath.Join(common.IntermediateDir, fmt.Sprintf("mr-%d-%d", idx, y))
+	for y := 0; y < w.nReduce; y++ {
+		interFilename := filepath.Join(common.IntermediateDir, fmt.Sprintf("mr-%d-%d", task.Idx, y))
 		file, err := os.Create(interFilename)
 		if err != nil {
-			log.Printf("[Worker.Map] failed to create the intermediate file %s: %v", interFilename, err)
+			log.Printf("[Worker.doMapWork] failed to create the intermediate file %s: %v", interFilename, err)
 			return
 		}
 		files = append(files, file)
@@ -83,12 +111,16 @@ func (w *Worker) Map(idx, nReduce int, wg *sync.WaitGroup) {
 
 	kva := w.convertFileToKVArray(filename)
 	for _, kv := range kva {
-		hashIdx := ihash(kv.Key) % nReduce
+		hashIdx := ihash(kv.Key) % w.nReduce
 		encoder := encoders[hashIdx]
 		if err := encoder.Encode(kv); err != nil {
-			log.Printf("[Worker.Map] failed to encode the KV pair (key = %s, val = %s): %v", kv.Key, kv.Value, err)
+			log.Printf("[Worker.doMapWork] failed to encode the KV pair (key = %s, val = %s): %v", kv.Key, kv.Value, err)
 		}
 	}
+}
+
+func (w *Worker) doReduceWork() {
+
 }
 
 func (w *Worker) convertFileToKVArray(filename string) []common.KeyValue {
@@ -107,28 +139,28 @@ func (w *Worker) convertFileToKVArray(filename string) []common.KeyValue {
 	return w.mapFunc(filename, string(content))
 }
 
-func getMapTask() string {
-	args := DummyArgs{}
-	reply := TaskReply{}
+func getTask() *TaskReply {
+	args := &DummyArgs{}
+	reply := &TaskReply{}
 
-	ok := call("Coordinator.GetMapTask", &args, &reply)
+	ok := call("Coordinator.AssignTask", args, reply)
 	if !ok {
-		log.Printf("[getMapTask] call failed!")
-		return ""
+		log.Printf("[getTask] call failed!")
+		return nil
 	}
-	return reply.Filename
+	return reply
 }
 
-func getCoordinatorData() (int, int) {
+func getNReduce() int {
 	args := DummyArgs{}
-	reply := CoordinatorDataReply{}
+	reply := 0
 
-	ok := call("Coordinator.GetData", &args, &reply)
+	ok := call("Coordinator.GetNReduce", &args, &reply)
 	if !ok {
 		log.Printf("[getCoordinatorData] call failed!")
-		return -1, 0
+		return -1
 	}
-	return reply.NReduce, reply.NumFiles
+	return reply
 }
 
 // call sends an RPC request to the coordinator, wait for the response.
