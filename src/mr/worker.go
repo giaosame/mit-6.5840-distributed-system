@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/rpc"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -39,34 +41,33 @@ func MakeWorker(mapFunc func(string, string) []common.KeyValue, reduceFunc func(
 }
 
 func (w *Worker) MapReduce() {
-	stage := StageMapping
-	allTasksAssigned := make(chan bool, 1)
+	var stage int
+	stageChan := make(chan int)
 	wg := sync.WaitGroup{}
 
 	w.nReduce = getNReduce()
 	if w.nReduce < 0 {
 		return
 	}
-
 	for {
 		select {
-		case <-allTasksAssigned:
-			wg.Wait()
-			stage++
+		case stage = <-stageChan:
 		default:
-			go w.work(allTasksAssigned, &wg)
+			go w.work(stageChan, &wg)
 		}
 
-		if stage >= StageReducing {
+		if stage == StageDone {
 			break
+		} else {
+			wg.Wait()
 		}
 		time.Sleep(MapReduceSleepFactor * time.Millisecond)
 	}
 	log.Println("[Worker.MapReduce] completed successfully!")
-	time.Sleep(time.Second * 5)
+	time.Sleep(time.Second * 3)
 }
 
-func (w *Worker) work(waitChan chan bool, wg *sync.WaitGroup) {
+func (w *Worker) work(stageChan chan int, wg *sync.WaitGroup) {
 	taskReply := getTask()
 	if taskReply == nil { // ignores tasks which failed to call rpc
 		return
@@ -74,11 +75,11 @@ func (w *Worker) work(waitChan chan bool, wg *sync.WaitGroup) {
 
 	switch taskReply.Task.Type {
 	case TaskTypeVoid:
-		waitChan <- true
+		stageChan <- StageWaiting
 	case TaskTypeMap:
 		w.doMapWork(taskReply.Task, taskReply.Filenames[0], wg)
 	case TaskTypeReduce:
-		w.doReduceWork()
+		w.doReduceWork(taskReply.Task, taskReply.Filenames, stageChan, wg)
 	}
 }
 
@@ -95,8 +96,8 @@ func (w *Worker) doMapWork(task *Task, filename string, wg *sync.WaitGroup) {
 		for _, file := range files {
 			file.Close()
 		}
-		reportTask(task, interFilenames, err)
 		wg.Done()
+		reportTask(task, interFilenames, err)
 	}()
 
 	for y := 0; y < w.nReduce; y++ {
@@ -124,8 +125,64 @@ func (w *Worker) doMapWork(task *Task, filename string, wg *sync.WaitGroup) {
 	}
 }
 
-func (w *Worker) doReduceWork() {
+func (w *Worker) doReduceWork(task *Task, interFilenames []string, stageChan chan int, wg *sync.WaitGroup) {
+	wg.Add(1)
+	task.Status = TaskStatusDoing
+	log.Printf("[Worker.doReduceWork] begin to reduce the #%d list of files", task.Idx)
 
+	var err error
+	var kva []common.KeyValue
+	defer func() {
+		wg.Done()
+		stage := reportTask(task, nil, err)
+		if stage == StageDone {
+			stageChan <- StageDone
+		}
+	}()
+
+	for _, interFilename := range interFilenames {
+		var interFile *os.File
+		interFile, err = os.Open(interFilename)
+		if err != nil {
+			log.Printf("[Worker.doReduceWork] failed to open the intermediate file %s: %v", interFilename, err)
+			return
+		}
+		decoder := json.NewDecoder(interFile)
+		for { // read json file back
+			var kv common.KeyValue
+			if tmpErr := decoder.Decode(&kv); tmpErr != nil {
+				if tmpErr != io.EOF {
+					err = tmpErr
+					log.Printf("[Worker.doReduceWork] failed to decode the intermediate file %s: %v", interFilename, err)
+				}
+				break
+			}
+			kva = append(kva, kv)
+		}
+		interFile.Close()
+	}
+
+	// sort and write the reduce output to the file, according to the reduce part of main/mrsequential.go
+	sort.Sort(common.ByKey(kva))
+	outFile, _ := os.Create(fmt.Sprintf("mr-out-%d", task.Idx))
+	defer outFile.Close()
+
+	for i := 0; i < len(kva); {
+		j := i + 1
+		for j < len(kva) && kva[j].Key == kva[i].Key {
+			j++
+		}
+
+		var values []string
+		for k := i; k < j; k++ {
+			values = append(values, kva[k].Value)
+		}
+		output := w.reduceFunc(kva[i].Key, values)
+
+		// this is the correct format for each line of Reduce output.
+		fmt.Fprintf(outFile, "%v %v\n", kva[i].Key, output)
+		i = j
+	}
 }
 
 func (w *Worker) convertFileToKVArray(filename string) []common.KeyValue {
@@ -156,24 +213,32 @@ func getTask() *TaskReply {
 	return reply
 }
 
-func reportTask(task *Task, filenames []string, err error) {
+func reportTask(task *Task, filenames []string, err error) int {
+	var taskType string
+	switch task.Type {
+	case TaskTypeMap:
+		taskType = "map"
+	case TaskTypeReduce:
+		taskType = "reduce"
+	}
 	if err != nil {
 		task.Status = TaskStatusFailed
-		log.Printf("[reportTask] map task #%d failed", task.Idx)
+		log.Printf("[reportTask] %s task #%d failed", taskType, task.Idx)
 	} else {
 		task.Status = TaskStatusDone
-		log.Printf("[reportTask] map task #%d completed", task.Idx)
+		log.Printf("[reportTask] %s task #%d completed", taskType, task.Idx)
 	}
 
 	args := &ReportArgs{
 		Task:      task,
 		Filenames: filenames,
 	}
-	reply := &DummyReply{}
-	ok := call("Coordinator.ReportTask", args, reply)
+	reply := ReportReply(-1)
+	ok := call("Coordinator.ReportTask", args, &reply)
 	if !ok {
 		log.Printf("[reportTask] call failed!")
 	}
+	return int(reply)
 }
 
 func getNReduce() int {

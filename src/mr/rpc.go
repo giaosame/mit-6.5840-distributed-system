@@ -20,7 +20,7 @@ const (
 
 type DummyArgs struct{}
 
-type DummyReply struct{}
+type ReportReply int
 
 type Task struct {
 	Idx    int

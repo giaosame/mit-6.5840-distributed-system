@@ -17,6 +17,7 @@ const MappersPerFile = 1
 const (
 	StageMapping = iota
 	StageReducing
+	StageWaiting
 	StageDone
 )
 
@@ -102,23 +103,33 @@ func (c *Coordinator) assignMapTask(reply *TaskReply) {
 
 // assignReduceTask assigns a reduce task included in reply
 func (c *Coordinator) assignReduceTask(reply *TaskReply) {
-	c.indexMtx.Lock()
-	idx := c.reduceIdx
-	c.reduceIdx++
-	c.indexMtx.Unlock()
+	var idx int
+	select {
+	case idx = <-c.redoTaskChan: // a failed task found, redo it
+	default:
+		c.indexMtx.Lock()
+		idx = c.reduceIdx
+		c.reduceIdx++
+		c.indexMtx.Unlock()
+	}
 	if idx >= c.nReduce {
 		return
 	}
+
+	reply.Task.Idx = idx
+	reply.Task.Type = TaskTypeReduce
+	reply.Task.Status = TaskStatusReady
+	reply.Filenames = c.interMap[idx]
 }
 
 // ReportTask reports the task completion sent from worker
-func (c *Coordinator) ReportTask(args *ReportArgs, reply *DummyReply) error {
+func (c *Coordinator) ReportTask(args *ReportArgs, reply *ReportReply) error {
 	task := args.Task
 	switch task.Type {
 	case TaskTypeMap:
 		return c.reportMapTask(task, args.Filenames)
 	case TaskTypeReduce:
-		return c.reportReduceTask()
+		return c.reportReduceTask(task, reply)
 	}
 	return nil
 }
@@ -150,12 +161,29 @@ func (c *Coordinator) reportMapTask(task *Task, interFilenames []string) error {
 	case TaskStatusFailed:
 		c.redoTaskChan <- task.Idx
 	default:
-		return errors.New("received an invalid reported task")
+		return errors.New("received an invalid reported map task")
 	}
 	return nil
 }
 
-func (c *Coordinator) reportReduceTask() error {
+func (c *Coordinator) reportReduceTask(task *Task, reply *ReportReply) error {
+	switch task.Status {
+	case TaskStatusDone:
+		c.nDoneMtx.Lock()
+		c.nReduceDone++
+		curNumReduceDone := c.nReduceDone
+		c.nDoneMtx.Unlock()
+		if curNumReduceDone == c.nReduce {
+			c.stageMtx.Lock()
+			c.stage = StageDone // all tasks completed!
+			c.stageMtx.Unlock()
+			*reply = StageDone
+		}
+	case TaskStatusFailed:
+		c.redoTaskChan <- task.Idx
+	default:
+		return errors.New("received an invalid reported reduce task")
+	}
 	return nil
 }
 
