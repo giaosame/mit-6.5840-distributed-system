@@ -68,7 +68,6 @@ func (w *Worker) MapReduce() {
 
 func (w *Worker) work(waitChan chan bool, wg *sync.WaitGroup) {
 	taskReply := getTask()
-	log.Println(taskReply)
 	if taskReply == nil { // ignores tasks which failed to call rpc
 		return
 	}
@@ -88,33 +87,39 @@ func (w *Worker) doMapWork(task *Task, filename string, wg *sync.WaitGroup) {
 	task.Status = TaskStatusDoing
 	log.Println("[Worker.doMapWork] begin to map the file", filename)
 
-	var files []*os.File
+	var err error
+	interFilenames := make([]string, w.nReduce)
+	files := make([]*os.File, w.nReduce)
+	encoders := make([]*json.Encoder, w.nReduce)
 	defer func() {
 		for _, file := range files {
 			file.Close()
 		}
-		log.Println("[Worker.doMapWork] completed to map the file", filename)
+		reportTask(task, interFilenames, err)
 		wg.Done()
 	}()
 
-	var encoders []*json.Encoder
 	for y := 0; y < w.nReduce; y++ {
+		var file *os.File
 		interFilename := filepath.Join(common.IntermediateDir, fmt.Sprintf("mr-%d-%d", task.Idx, y))
-		file, err := os.Create(interFilename)
+		file, err = os.Create(interFilename)
 		if err != nil {
 			log.Printf("[Worker.doMapWork] failed to create the intermediate file %s: %v", interFilename, err)
 			return
 		}
-		files = append(files, file)
-		encoders = append(encoders, json.NewEncoder(file))
+
+		interFilenames[y] = interFilename
+		files[y] = file
+		encoders[y] = json.NewEncoder(file)
 	}
 
 	kva := w.convertFileToKVArray(filename)
 	for _, kv := range kva {
 		hashIdx := ihash(kv.Key) % w.nReduce
 		encoder := encoders[hashIdx]
-		if err := encoder.Encode(kv); err != nil {
+		if err = encoder.Encode(kv); err != nil {
 			log.Printf("[Worker.doMapWork] failed to encode the KV pair (key = %s, val = %s): %v", kv.Key, kv.Value, err)
+			return
 		}
 	}
 }
@@ -149,6 +154,26 @@ func getTask() *TaskReply {
 		return nil
 	}
 	return reply
+}
+
+func reportTask(task *Task, filenames []string, err error) {
+	if err != nil {
+		task.Status = TaskStatusFailed
+		log.Printf("[reportTask] map task #%d failed", task.Idx)
+	} else {
+		task.Status = TaskStatusDone
+		log.Printf("[reportTask] map task #%d completed", task.Idx)
+	}
+
+	args := &ReportArgs{
+		Task:      task,
+		Filenames: filenames,
+	}
+	reply := &DummyReply{}
+	ok := call("Coordinator.ReportTask", args, reply)
+	if !ok {
+		log.Printf("[reportTask] call failed!")
+	}
 }
 
 func getNReduce() int {

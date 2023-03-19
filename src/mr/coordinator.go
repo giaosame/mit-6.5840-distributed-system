@@ -1,11 +1,14 @@
 package mr
 
 import (
+	"errors"
 	"log"
 	"net"
 	"net/http"
 	"net/rpc"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -18,10 +21,11 @@ const (
 )
 
 type Coordinator struct {
-	files     []string
-	stageMtx  sync.Mutex
-	indexMtx  sync.Mutex
-	reportMtx sync.Mutex
+	files    []string
+	stageMtx sync.Mutex // mutex for the variable stage
+	indexMtx sync.Mutex // mutex for the variables mapIdx and reduceIdx
+	nDoneMtx sync.Mutex // mutex for the variables nMapDone and nReduceDone
+	interMtx sync.Mutex // mutex for the variable interMap
 
 	stage          int
 	mapIdx         int
@@ -32,7 +36,8 @@ type Coordinator struct {
 	nReduceDone    int
 	mappersPerFile int
 
-	interMap map[int][]string
+	interMap     map[int][]string
+	redoTaskChan chan int
 }
 
 // RPC handlers for the worker to call.
@@ -43,7 +48,7 @@ func (c *Coordinator) GetNReduce(args *DummyArgs, reply *int) error {
 	return nil
 }
 
-// AssignTask returns a map task including the filename
+// AssignTask returns a specific assigned task to the worker
 func (c *Coordinator) AssignTask(args *DummyArgs, reply *TaskReply) error {
 	var stage int
 	c.stageMtx.Lock()
@@ -61,42 +66,7 @@ func (c *Coordinator) AssignTask(args *DummyArgs, reply *TaskReply) error {
 	return nil
 }
 
-func (c *Coordinator) ReportTask(args *ReportArgs, reply *DummyReply) error {
-	task := args.Task
-	switch task.Type {
-	case TaskTypeMap:
-		if task.Status == TaskStatusDone {
-			c.reportMtx.Lock()
-			c.nMapDone++
-			curNumMapDone := c.nMapDone
-			c.reportMtx.Unlock()
-			if curNumMapDone == c.nMap {
-				c.stageMtx.Lock()
-				c.stage = StageReducing // begin to do reducing
-				c.stageMtx.Unlock()
-			}
-			return nil
-		}
-	case TaskTypeReduce:
-		if task.Status == TaskStatusDone {
-			c.reportMtx.Lock()
-			c.nReduceDone++
-			curNumReduceDone := c.nReduceDone
-			c.reportMtx.Unlock()
-			if curNumReduceDone == c.nReduce {
-				c.stageMtx.Lock()
-				c.stage = StageDone
-				c.stageMtx.Unlock()
-			}
-			return nil
-		}
-	}
-
-	// otherwise, it means task failed
-	// TODO: restart a task
-	return nil
-}
-
+// assignTask assigns a task to the worker according to the current stage
 func (c *Coordinator) assignTask(stage int, reply *TaskReply) {
 	reply.Task = &Task{Type: TaskTypeVoid}
 	switch stage {
@@ -109,11 +79,17 @@ func (c *Coordinator) assignTask(stage int, reply *TaskReply) {
 	}
 }
 
+// assignMapTask assigns a map task included in reply
 func (c *Coordinator) assignMapTask(reply *TaskReply) {
-	c.indexMtx.Lock()
-	idx := c.mapIdx
-	c.mapIdx++
-	c.indexMtx.Unlock()
+	var idx int
+	select {
+	case idx = <-c.redoTaskChan: // a failed task found, redo it
+	default:
+		c.indexMtx.Lock()
+		idx = c.mapIdx
+		c.mapIdx++
+		c.indexMtx.Unlock()
+	}
 	if idx >= c.nMap {
 		return
 	}
@@ -124,6 +100,7 @@ func (c *Coordinator) assignMapTask(reply *TaskReply) {
 	reply.Filenames = append(reply.Filenames, c.files[idx])
 }
 
+// assignReduceTask assigns a reduce task included in reply
 func (c *Coordinator) assignReduceTask(reply *TaskReply) {
 	c.indexMtx.Lock()
 	idx := c.reduceIdx
@@ -132,6 +109,54 @@ func (c *Coordinator) assignReduceTask(reply *TaskReply) {
 	if idx >= c.nReduce {
 		return
 	}
+}
+
+// ReportTask reports the task completion sent from worker
+func (c *Coordinator) ReportTask(args *ReportArgs, reply *DummyReply) error {
+	task := args.Task
+	switch task.Type {
+	case TaskTypeMap:
+		return c.reportMapTask(task, args.Filenames)
+	case TaskTypeReduce:
+		return c.reportReduceTask()
+	}
+	return nil
+}
+
+func (c *Coordinator) reportMapTask(task *Task, interFilenames []string) error {
+	switch task.Status {
+	case TaskStatusDone:
+		c.nDoneMtx.Lock()
+		c.nMapDone++
+		curNumMapDone := c.nMapDone
+		c.nDoneMtx.Unlock()
+		if curNumMapDone == c.nMap {
+			c.stageMtx.Lock()
+			c.stage = StageReducing // begin to do reducing
+			c.stageMtx.Unlock()
+		}
+
+		for _, filename := range interFilenames {
+			strs := strings.Split(filename, "-")
+			reduceIdx, err := strconv.Atoi(strs[len(strs)-1])
+			if err != nil {
+				log.Printf("[Coordinator.reportMapTask] failed to convert string to integer for the intermediate file %s", filename)
+				return err
+			}
+			c.interMtx.Lock()
+			c.interMap[reduceIdx] = append(c.interMap[reduceIdx], filename)
+			c.interMtx.Unlock()
+		}
+	case TaskStatusFailed:
+		c.redoTaskChan <- task.Idx
+	default:
+		return errors.New("received an invalid reported task")
+	}
+	return nil
+}
+
+func (c *Coordinator) reportReduceTask() error {
+	return nil
 }
 
 // serve starts a thread that listens for RPCs from worker.go
@@ -171,6 +196,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		files:          files,
 		nReduce:        nReduce,
 		interMap:       make(map[int][]string),
+		redoTaskChan:   make(chan int),
 	}
 	c.nMap = c.mappersPerFile * len(c.files)
 

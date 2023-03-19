@@ -15,6 +15,7 @@ const (
 	TaskStatusReady = iota
 	TaskStatusDoing
 	TaskStatusDone
+	TaskStatusFailed
 )
 
 type DummyArgs struct{}
@@ -32,10 +33,7 @@ type TaskReply struct {
 	Filenames []string
 }
 
-type ReportArgs struct {
-	Task           *Task
-	InterFilenames []string
-}
+type ReportArgs TaskReply
 
 // Add your RPC definitions here.
 
