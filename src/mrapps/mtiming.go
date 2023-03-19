@@ -7,14 +7,17 @@ package main
 // go build -buildmode=plugin mtiming.go
 //
 
-import "6.5840/mr"
-import "strings"
-import "fmt"
-import "os"
-import "syscall"
-import "time"
-import "sort"
-import "io/ioutil"
+import (
+	"fmt"
+	"io/ioutil"
+	"os"
+	"sort"
+	"strings"
+	"syscall"
+	"time"
+
+	"6.5840/common"
+)
 
 func nparallel(phase string) int {
 	// create a file so that other workers will see that
@@ -61,20 +64,20 @@ func nparallel(phase string) int {
 	return ret
 }
 
-func Map(filename string, contents string) []mr.KeyValue {
+func Map(filename string, contents string) []common.KeyValue {
 	t0 := time.Now()
 	ts := float64(t0.Unix()) + (float64(t0.Nanosecond()) / 1000000000.0)
 	pid := os.Getpid()
 
 	n := nparallel("map")
 
-	kva := []mr.KeyValue{}
-	kva = append(kva, mr.KeyValue{
-		fmt.Sprintf("times-%v", pid),
-		fmt.Sprintf("%.1f", ts)})
-	kva = append(kva, mr.KeyValue{
-		fmt.Sprintf("parallel-%v", pid),
-		fmt.Sprintf("%d", n)})
+	var kva []common.KeyValue
+	kva = append(kva, common.KeyValue{
+		Key:   fmt.Sprintf("times-%v", pid),
+		Value: fmt.Sprintf("%.1f", ts)})
+	kva = append(kva, common.KeyValue{
+		Key:   fmt.Sprintf("parallel-%v", pid),
+		Value: fmt.Sprintf("%d", n)})
 	return kva
 }
 

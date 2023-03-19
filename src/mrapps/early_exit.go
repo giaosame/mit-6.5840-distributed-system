@@ -11,14 +11,14 @@ import (
 	"strings"
 	"time"
 
-	"6.5840/mr"
+	"6.5840/common"
 )
 
 // The map function is called once for each file of input.
 // This map function just returns 1 for each file
-func Map(filename string, contents string) []mr.KeyValue {
-	kva := []mr.KeyValue{}
-	kva = append(kva, mr.KeyValue{filename, "1"})
+func Map(filename string, contents string) []common.KeyValue {
+	var kva []common.KeyValue
+	kva = append(kva, common.KeyValue{Key: filename, Value: "1"})
 	return kva
 }
 
