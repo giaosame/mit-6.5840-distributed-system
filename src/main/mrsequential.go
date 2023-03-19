@@ -14,13 +14,6 @@ import (
 	"6.5840/common"
 )
 
-// ByKey for sorting by key
-type ByKey []common.KeyValue
-
-func (a ByKey) Len() int           { return len(a) }
-func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
-
 func main() {
 	if len(os.Args) < 3 {
 		fmt.Fprintf(os.Stderr, "Usage: mrsequential xxx.so inputfiles...\n")
@@ -49,7 +42,7 @@ func main() {
 	// a big difference from real MapReduce is that all the
 	// intermediate data is in one place, intermediate[],
 	// rather than being partitioned into NxM buckets.
-	sort.Sort(ByKey(intermediate))
+	sort.Sort(common.ByKey(intermediate))
 
 	oname := "mr-out-0"
 	ofile, _ := os.Create(oname)
