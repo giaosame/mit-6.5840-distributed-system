@@ -80,6 +80,8 @@ func (w *Worker) work(stageChan chan int, wg *sync.WaitGroup) {
 		w.doMapWork(taskReply.Task, taskReply.Filenames[0], wg)
 	case TaskTypeReduce:
 		w.doReduceWork(taskReply.Task, taskReply.Filenames, stageChan, wg)
+	case TaskTypeEnd:
+		stageChan <- StageDone
 	}
 }
 
@@ -205,8 +207,7 @@ func getTask() *TaskReply {
 	args := &DummyArgs{}
 	reply := &TaskReply{}
 
-	ok := call("Coordinator.AssignTask", args, reply)
-	if !ok {
+	if ok := call("Coordinator.AssignTask", args, reply); !ok {
 		log.Printf("[getTask] call failed!")
 		return nil
 	}
@@ -234,8 +235,7 @@ func reportTask(task *Task, filenames []string, err error) int {
 		Filenames: filenames,
 	}
 	reply := ReportReply(-1)
-	ok := call("Coordinator.ReportTask", args, &reply)
-	if !ok {
+	if ok := call("Coordinator.ReportTask", args, &reply); !ok {
 		log.Printf("[reportTask] call failed!")
 	}
 	return int(reply)
@@ -245,9 +245,8 @@ func getNReduce() int {
 	args := DummyArgs{}
 	reply := 0
 
-	ok := call("Coordinator.GetNReduce", &args, &reply)
-	if !ok {
-		log.Printf("[getCoordinatorData] call failed!")
+	if ok := call("Coordinator.GetNReduce", &args, &reply); !ok {
+		log.Printf("[getNReduce] call failed!")
 		return -1
 	}
 	return reply
