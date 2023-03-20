@@ -75,6 +75,8 @@ func (c *Coordinator) assignTask(stage int, reply *TaskReply) {
 		c.assignMapTask(reply)
 	case StageReducing:
 		c.assignReduceTask(reply)
+	case StageDone:
+		c.assignEndTask(reply)
 	default:
 		break
 	}
@@ -120,6 +122,11 @@ func (c *Coordinator) assignReduceTask(reply *TaskReply) {
 	reply.Task.Type = TaskTypeReduce
 	reply.Task.Status = TaskStatusReady
 	reply.Filenames = c.interMap[idx]
+}
+
+// assignEndTask assigns a task as an end flag
+func (c *Coordinator) assignEndTask(reply *TaskReply) {
+	reply.Task.Type = TaskTypeEnd
 }
 
 // ReportTask reports the task completion sent from worker

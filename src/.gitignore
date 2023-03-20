@@ -8,3 +8,5 @@ mrtmp.*
 /kvpaxos/x.txt
 *.so
 /main/intermediate
+.DS_Store
+../.idea/

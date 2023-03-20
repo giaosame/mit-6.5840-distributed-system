@@ -9,6 +9,7 @@ const (
 	TaskTypeVoid = iota
 	TaskTypeMap
 	TaskTypeReduce
+	TaskTypeEnd
 )
 
 const (
