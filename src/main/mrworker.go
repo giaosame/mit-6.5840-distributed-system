@@ -10,13 +10,13 @@
 package main
 
 import (
-	"6.5840/mr"
 	"errors"
 	"fmt"
 	"log"
 	"os"
 
 	"6.5840/common"
+	"6.5840/mr"
 )
 
 const MultiModeArg = "multi-mode"

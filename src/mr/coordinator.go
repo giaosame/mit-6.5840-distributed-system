@@ -10,7 +10,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
+
+const CheckTaskSleepSec = 10
 
 const (
 	StageMapping = iota
@@ -24,7 +27,6 @@ type Coordinator struct {
 	stageMtx sync.Mutex // mutex for the variable stage
 	indexMtx sync.Mutex // mutex for the variables fileIdx and reduceIdx
 	nDoneMtx sync.Mutex // mutex for the variables nFileDone and nReduceDone
-	tasksMtx sync.Mutex // mutex for the list tasks
 	interMtx sync.Mutex // mutex for the variable interMap
 
 	stage       int
@@ -35,7 +37,8 @@ type Coordinator struct {
 	nReduce     int // the number of reduce tasks
 	nReduceDone int // the number of successfully completed reduce tasks
 
-	tasks        []*Task          // the list of generated tasks
+	mapTasks     []*Task          // the list of generated map tasks
+	reduceTasks  []*Task          // the list of generated reduce tasks
 	interMap     map[int][]string // a map to map reduce index to its corresponding intermediate files
 	redoTaskChan chan int         // the channel to pass tasks need to be redone
 }
@@ -69,56 +72,52 @@ func (c *Coordinator) AssignTask(args *DummyArgs, task *Task) error {
 
 // assignMapTask assigns a map task included in reply
 func (c *Coordinator) assignMapTask(task *Task) {
-	var fileIdx int
+	var idx int
 	select {
-	case idx := <-c.redoTaskChan: // a failed task found, redo it
-		task = c.tasks[idx]
+	case idx = <-c.redoTaskChan: // a failed task found, redo it
+		task = c.mapTasks[idx]
 		return
 	default:
 		c.indexMtx.Lock()
-		fileIdx = c.fileIdx
+		idx = c.fileIdx
 		c.fileIdx++
 		c.indexMtx.Unlock()
 	}
-	if fileIdx >= c.nFile {
+	if idx >= c.nFile {
 		return
 	}
 
+	task.Idx = idx
 	task.Type = TaskTypeMap
 	task.Status = TaskStatusDoing
-	task.Filenames = []string{c.files[fileIdx]}
-
-	c.tasksMtx.Lock()
-	task.Idx = len(c.tasks)
-	c.tasks = append(c.tasks, task)
-	c.tasksMtx.Unlock()
+	task.Filenames = []string{c.files[idx]}
+	c.mapTasks[idx] = task
+	go c.checkTaskAsync(idx, c.mapTasks)
 }
 
 // assignReduceTask assigns a reduce task included in reply
 func (c *Coordinator) assignReduceTask(task *Task) {
-	var reduceIdx int
+	var idx int
 	select {
-	case idx := <-c.redoTaskChan: // a failed task found, redo it
-		task = c.tasks[idx]
+	case idx = <-c.redoTaskChan: // a failed task found, redo it
+		task = c.reduceTasks[idx]
 		return
 	default:
 		c.indexMtx.Lock()
-		reduceIdx = c.reduceIdx
+		idx = c.reduceIdx
 		c.reduceIdx++
 		c.indexMtx.Unlock()
 	}
-	if reduceIdx >= c.nReduce {
+	if idx >= c.nReduce {
 		return
 	}
 
+	task.Idx = idx
 	task.Type = TaskTypeReduce
 	task.Status = TaskStatusDoing
-	task.Filenames = c.interMap[reduceIdx]
-
-	c.tasksMtx.Lock()
-	task.Idx = len(c.tasks)
-	c.tasks = append(c.tasks, task)
-	c.tasksMtx.Unlock()
+	task.Filenames = c.interMap[idx]
+	c.reduceTasks[idx] = task
+	go c.checkTaskAsync(idx, c.reduceTasks)
 }
 
 // assignEndTask assigns a task as an end flag
@@ -140,6 +139,7 @@ func (c *Coordinator) ReportTask(task *Task, reply *ReportReply) error {
 func (c *Coordinator) reportMapTask(task *Task) error {
 	switch task.Status {
 	case TaskStatusDone:
+		c.mapTasks[task.Idx].Status = TaskStatusDone
 		c.nDoneMtx.Lock()
 		c.nFileDone++
 		curNumFileDone := c.nFileDone
@@ -148,9 +148,6 @@ func (c *Coordinator) reportMapTask(task *Task) error {
 			c.stageMtx.Lock()
 			c.stage = StageReducing // begin to do reducing
 			c.stageMtx.Unlock()
-			c.tasksMtx.Lock()
-			c.tasks = []*Task{}
-			c.tasksMtx.Unlock()
 		}
 
 		interFilenames := task.Filenames
@@ -176,6 +173,7 @@ func (c *Coordinator) reportMapTask(task *Task) error {
 func (c *Coordinator) reportReduceTask(task *Task, reply *ReportReply) error {
 	switch task.Status {
 	case TaskStatusDone:
+		c.reduceTasks[task.Idx].Status = TaskStatusDone
 		c.nDoneMtx.Lock()
 		c.nReduceDone++
 		curNumReduceDone := c.nReduceDone
@@ -192,6 +190,14 @@ func (c *Coordinator) reportReduceTask(task *Task, reply *ReportReply) error {
 		return errors.New("received an invalid reported reduce task")
 	}
 	return nil
+}
+
+// checkTaskAsync checks the task status async
+func (c *Coordinator) checkTaskAsync(idx int, tasks []*Task) {
+	time.Sleep(CheckTaskSleepSec * time.Second)
+	if tasks[idx].Status == TaskStatusDoing {
+		c.redoTaskChan <- idx
+	}
 }
 
 // serve starts a thread that listens for RPCs from worker.go
@@ -232,6 +238,8 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		nReduce:      nReduce,
 		interMap:     make(map[int][]string),
 		redoTaskChan: make(chan int),
+		mapTasks:     make([]*Task, len(files)),
+		reduceTasks:  make([]*Task, nReduce),
 	}
 
 	c.serve()

@@ -14,7 +14,7 @@ import (
 	"6.5840/common"
 )
 
-const MapReduceSleepFactor = 20
+const MapReduceSleepMilliSec = 20
 
 type Worker struct {
 	nReduce    int
@@ -42,7 +42,7 @@ func (w *Worker) MapReduce() {
 		if stage == StageDone {
 			break
 		}
-		time.Sleep(MapReduceSleepFactor * time.Millisecond)
+		time.Sleep(MapReduceSleepMilliSec * time.Millisecond)
 	}
 	log.Println("[Worker.MapReduce] completed successfully!")
 	time.Sleep(time.Second * 3)

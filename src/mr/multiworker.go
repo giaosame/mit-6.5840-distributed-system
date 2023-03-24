@@ -15,7 +15,7 @@ import (
 	"6.5840/common"
 )
 
-const MultiMapReduceSleepFactor = 10
+const MultiMapReduceSleepMilliSec = 10
 
 // MultiWorker generates multiple worker goroutines
 type MultiWorker struct {
@@ -53,7 +53,7 @@ func (w *MultiWorker) MapReduce() {
 		} else {
 			wg.Wait()
 		}
-		time.Sleep(MultiMapReduceSleepFactor * time.Millisecond)
+		time.Sleep(MultiMapReduceSleepMilliSec * time.Millisecond)
 	}
 	log.Println("[MultiWorker.MapReduce] completed successfully!")
 	time.Sleep(time.Second)
