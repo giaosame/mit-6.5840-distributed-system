@@ -13,30 +13,21 @@ const (
 )
 
 const (
-	TaskStatusReady = iota
-	TaskStatusDoing
+	TaskStatusDoing = iota
 	TaskStatusDone
 	TaskStatusFailed
 )
 
-type DummyArgs struct{}
-
-type ReportReply int
-
 type Task struct {
-	Idx    int
-	Type   uint8
-	Status uint8
-}
-
-type TaskReply struct {
-	Task      *Task
+	Idx       int
+	Type      uint8
+	Status    uint8
 	Filenames []string
 }
 
-type ReportArgs TaskReply
+type DummyArgs struct{}
 
-// Add your RPC definitions here.
+type ReportReply int
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
