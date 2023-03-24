@@ -2,23 +2,28 @@
 // start a worker process, which is implemented in ../mr/worker.go.
 // Typically there will be multiple worker processes, talking to one coordinator.
 //
-// go run mrworker.go wc.so
-//
+// * single-worker mode:
+//   go run mrworker.go ../mrapps/wc.so
+// * multi-worker mode:
+//   go run mrworker.go ../mrapps/wc.so multi-mode
 
 package main
 
 import (
+	"6.5840/mr"
 	"errors"
 	"fmt"
 	"log"
 	"os"
 
 	"6.5840/common"
-	"6.5840/mr"
 )
 
+const MultiModeArg = "multi-mode"
+
 func main() {
-	if len(os.Args) != 2 {
+	nArgs := len(os.Args)
+	if nArgs < 2 {
 		fmt.Fprintf(os.Stderr, "Usage: mrworker xxx.so\n")
 		os.Exit(1)
 	}
@@ -31,6 +36,12 @@ func main() {
 	}
 
 	mapFunc, reduceFunc := common.LoadPlugin(os.Args[1])
-	w := mr.MakeWorker(mapFunc, reduceFunc)
-	w.MapReduce()
+	if nArgs == 2 { // multi-worker mode is one main worker process which generates multiple worker goroutines
+		w := mr.MakeWorker(mapFunc, reduceFunc)
+		w.MapReduce()
+	} else if os.Args[2] == MultiModeArg {
+		log.Println(MultiModeArg)
+		mw := mr.MakeMultiWorker(mapFunc, reduceFunc)
+		mw.MapReduce()
+	}
 }

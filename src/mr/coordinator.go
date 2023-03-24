@@ -12,8 +12,6 @@ import (
 	"sync"
 )
 
-const MappersPerFile = 1
-
 const (
 	StageMapping = iota
 	StageReducing
@@ -24,21 +22,22 @@ const (
 type Coordinator struct {
 	files    []string
 	stageMtx sync.Mutex // mutex for the variable stage
-	indexMtx sync.Mutex // mutex for the variables mapIdx and reduceIdx
-	nDoneMtx sync.Mutex // mutex for the variables nMapDone and nReduceDone
+	indexMtx sync.Mutex // mutex for the variables fileIdx and reduceIdx
+	nDoneMtx sync.Mutex // mutex for the variables nFileDone and nReduceDone
+	tasksMtx sync.Mutex // mutex for the list tasks
 	interMtx sync.Mutex // mutex for the variable interMap
 
-	stage          int
-	mapIdx         int
-	nMap           int
-	nMapDone       int
-	reduceIdx      int
-	nReduce        int
-	nReduceDone    int
-	mappersPerFile int
+	stage       int
+	fileIdx     int // the index to the currently processed file
+	nFile       int // the number of files
+	nFileDone   int // the number of successfully processed files
+	reduceIdx   int // the index to the currently processed reduce task
+	nReduce     int // the number of reduce tasks
+	nReduceDone int // the number of successfully completed reduce tasks
 
-	interMap     map[int][]string
-	redoTaskChan chan int
+	tasks        []*Task          // the list of generated tasks
+	interMap     map[int][]string // a map to map reduce index to its corresponding intermediate files
+	redoTaskChan chan int         // the channel to pass tasks need to be redone
 }
 
 // RPC handlers for the worker to call.
@@ -49,111 +48,112 @@ func (c *Coordinator) GetNReduce(args *DummyArgs, reply *int) error {
 	return nil
 }
 
-// AssignTask returns a specific assigned task to the worker
-func (c *Coordinator) AssignTask(args *DummyArgs, reply *TaskReply) error {
-	var stage int
+// AssignTask returns a specific assigned task to the worker according to the current stage
+func (c *Coordinator) AssignTask(args *DummyArgs, task *Task) error {
 	c.stageMtx.Lock()
-	switch c.stage {
-	case StageMapping:
-		stage = StageMapping
-	case StageReducing:
-		stage = StageReducing
-	case StageDone:
-		stage = StageDone
-	}
+	stage := c.stage
 	c.stageMtx.Unlock()
 
-	c.assignTask(stage, reply)
-	return nil
-}
-
-// assignTask assigns a task to the worker according to the current stage
-func (c *Coordinator) assignTask(stage int, reply *TaskReply) {
-	reply.Task = &Task{Type: TaskTypeVoid}
 	switch stage {
 	case StageMapping:
-		c.assignMapTask(reply)
+		c.assignMapTask(task)
 	case StageReducing:
-		c.assignReduceTask(reply)
+		c.assignReduceTask(task)
 	case StageDone:
-		c.assignEndTask(reply)
+		c.assignEndTask(task)
 	default:
 		break
 	}
+	return nil
 }
 
 // assignMapTask assigns a map task included in reply
-func (c *Coordinator) assignMapTask(reply *TaskReply) {
-	var idx int
+func (c *Coordinator) assignMapTask(task *Task) {
+	var fileIdx int
 	select {
-	case idx = <-c.redoTaskChan: // a failed task found, redo it
+	case idx := <-c.redoTaskChan: // a failed task found, redo it
+		task = c.tasks[idx]
+		return
 	default:
 		c.indexMtx.Lock()
-		idx = c.mapIdx
-		c.mapIdx++
+		fileIdx = c.fileIdx
+		c.fileIdx++
 		c.indexMtx.Unlock()
 	}
-	if idx >= c.nMap {
+	if fileIdx >= c.nFile {
 		return
 	}
 
-	reply.Task.Idx = idx
-	reply.Task.Type = TaskTypeMap
-	reply.Task.Status = TaskStatusReady
-	reply.Filenames = append(reply.Filenames, c.files[idx])
+	task.Type = TaskTypeMap
+	task.Status = TaskStatusDoing
+	task.Filenames = []string{c.files[fileIdx]}
+
+	c.tasksMtx.Lock()
+	task.Idx = len(c.tasks)
+	c.tasks = append(c.tasks, task)
+	c.tasksMtx.Unlock()
 }
 
 // assignReduceTask assigns a reduce task included in reply
-func (c *Coordinator) assignReduceTask(reply *TaskReply) {
-	var idx int
+func (c *Coordinator) assignReduceTask(task *Task) {
+	var reduceIdx int
 	select {
-	case idx = <-c.redoTaskChan: // a failed task found, redo it
+	case idx := <-c.redoTaskChan: // a failed task found, redo it
+		task = c.tasks[idx]
+		return
 	default:
 		c.indexMtx.Lock()
-		idx = c.reduceIdx
+		reduceIdx = c.reduceIdx
 		c.reduceIdx++
 		c.indexMtx.Unlock()
 	}
-	if idx >= c.nReduce {
+	if reduceIdx >= c.nReduce {
 		return
 	}
 
-	reply.Task.Idx = idx
-	reply.Task.Type = TaskTypeReduce
-	reply.Task.Status = TaskStatusReady
-	reply.Filenames = c.interMap[idx]
+	task.Type = TaskTypeReduce
+	task.Status = TaskStatusDoing
+	task.Filenames = c.interMap[reduceIdx]
+
+	c.tasksMtx.Lock()
+	task.Idx = len(c.tasks)
+	c.tasks = append(c.tasks, task)
+	c.tasksMtx.Unlock()
 }
 
 // assignEndTask assigns a task as an end flag
-func (c *Coordinator) assignEndTask(reply *TaskReply) {
-	reply.Task.Type = TaskTypeEnd
+func (c *Coordinator) assignEndTask(task *Task) {
+	task.Type = TaskTypeEnd
 }
 
 // ReportTask reports the task completion sent from worker
-func (c *Coordinator) ReportTask(args *ReportArgs, reply *ReportReply) error {
-	task := args.Task
+func (c *Coordinator) ReportTask(task *Task, reply *ReportReply) error {
 	switch task.Type {
 	case TaskTypeMap:
-		return c.reportMapTask(task, args.Filenames)
+		return c.reportMapTask(task)
 	case TaskTypeReduce:
 		return c.reportReduceTask(task, reply)
 	}
 	return nil
 }
 
-func (c *Coordinator) reportMapTask(task *Task, interFilenames []string) error {
+func (c *Coordinator) reportMapTask(task *Task) error {
 	switch task.Status {
 	case TaskStatusDone:
 		c.nDoneMtx.Lock()
-		c.nMapDone++
-		curNumMapDone := c.nMapDone
+		c.nFileDone++
+		curNumFileDone := c.nFileDone
 		c.nDoneMtx.Unlock()
-		if curNumMapDone == c.nMap {
+		if curNumFileDone == c.nFile {
 			c.stageMtx.Lock()
 			c.stage = StageReducing // begin to do reducing
 			c.stageMtx.Unlock()
+			c.tasksMtx.Lock()
+			c.tasks = []*Task{}
+			c.tasksMtx.Unlock()
 		}
 
+		interFilenames := task.Filenames
 		for _, filename := range interFilenames {
 			strs := strings.Split(filename, "-")
 			reduceIdx, err := strconv.Atoi(strs[len(strs)-1])
@@ -226,14 +226,13 @@ func (c *Coordinator) Done() bool {
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
 	c := Coordinator{
-		stage:          StageMapping,
-		mappersPerFile: MappersPerFile,
-		files:          files,
-		nReduce:        nReduce,
-		interMap:       make(map[int][]string),
-		redoTaskChan:   make(chan int),
+		stage:        StageMapping,
+		files:        files,
+		nFile:        len(files),
+		nReduce:      nReduce,
+		interMap:     make(map[int][]string),
+		redoTaskChan: make(chan int),
 	}
-	c.nMap = c.mappersPerFile * len(c.files)
 
 	c.serve()
 	return &c

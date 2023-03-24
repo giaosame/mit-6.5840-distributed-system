@@ -3,33 +3,23 @@ package mr
 import (
 	"encoding/json"
 	"fmt"
-	"hash/fnv"
 	"io"
-	"io/ioutil"
 	"log"
 	"net/rpc"
 	"os"
 	"path/filepath"
 	"sort"
-	"sync"
 	"time"
 
 	"6.5840/common"
 )
 
-const MapReduceSleepFactor = 30
+const MapReduceSleepFactor = 20
 
 type Worker struct {
 	nReduce    int
 	mapFunc    func(string, string) []common.KeyValue
 	reduceFunc func(string, []string) string
-}
-
-// use ihash(key) % NReduce to choose the number of reduce task for each KeyValue emitted by Map.
-func ihash(key string) int {
-	h := fnv.New32a()
-	h.Write([]byte(key))
-	return int(h.Sum32() & 0x7fffffff)
 }
 
 // MakeWorker is called by main/mrworker.go
@@ -41,25 +31,16 @@ func MakeWorker(mapFunc func(string, string) []common.KeyValue, reduceFunc func(
 }
 
 func (w *Worker) MapReduce() {
-	var stage int
-	stageChan := make(chan int)
-	wg := sync.WaitGroup{}
-
 	w.nReduce = getNReduce()
 	if w.nReduce < 0 {
 		return
 	}
-	for {
-		select {
-		case stage = <-stageChan:
-		default:
-			go w.work(stageChan, &wg)
-		}
 
+	var stage int
+	for {
+		w.work(&stage)
 		if stage == StageDone {
 			break
-		} else {
-			wg.Wait()
 		}
 		time.Sleep(MapReduceSleepFactor * time.Millisecond)
 	}
@@ -67,27 +48,24 @@ func (w *Worker) MapReduce() {
 	time.Sleep(time.Second * 3)
 }
 
-func (w *Worker) work(stageChan chan int, wg *sync.WaitGroup) {
-	taskReply := getTask()
-	if taskReply == nil { // ignores tasks which failed to call rpc
+func (w *Worker) work(stage *int) {
+	task := getTask()
+	if task == nil {
 		return
 	}
 
-	switch taskReply.Task.Type {
-	case TaskTypeVoid:
-		stageChan <- StageWaiting
+	switch task.Type {
 	case TaskTypeMap:
-		w.doMapWork(taskReply.Task, taskReply.Filenames[0], wg)
+		w.doMapWork(task)
 	case TaskTypeReduce:
-		w.doReduceWork(taskReply.Task, taskReply.Filenames, stageChan, wg)
+		w.doReduceWork(task, stage)
 	case TaskTypeEnd:
-		stageChan <- StageDone
+		*stage = StageDone
 	}
 }
 
-func (w *Worker) doMapWork(task *Task, filename string, wg *sync.WaitGroup) {
-	wg.Add(1)
-	task.Status = TaskStatusDoing
+func (w *Worker) doMapWork(task *Task) {
+	filename := task.Filenames[0]
 	log.Println("[Worker.doMapWork] begin to map the file", filename)
 
 	var err error
@@ -98,8 +76,8 @@ func (w *Worker) doMapWork(task *Task, filename string, wg *sync.WaitGroup) {
 		for _, file := range files {
 			file.Close()
 		}
-		wg.Done()
-		reportTask(task, interFilenames, err)
+		task.Filenames = interFilenames
+		reportTask(task, err)
 	}()
 
 	for y := 0; y < w.nReduce; y++ {
@@ -116,9 +94,9 @@ func (w *Worker) doMapWork(task *Task, filename string, wg *sync.WaitGroup) {
 		encoders[y] = json.NewEncoder(file)
 	}
 
-	kva := w.convertFileToKVArray(filename)
+	kva := common.ConvertFileToKVArray(filename, w.mapFunc)
 	for _, kv := range kva {
-		hashIdx := ihash(kv.Key) % w.nReduce
+		hashIdx := common.Hash(kv.Key) % w.nReduce
 		encoder := encoders[hashIdx]
 		if err = encoder.Encode(kv); err != nil {
 			log.Printf("[Worker.doMapWork] failed to encode the KV pair (key = %s, val = %s): %v", kv.Key, kv.Value, err)
@@ -127,21 +105,16 @@ func (w *Worker) doMapWork(task *Task, filename string, wg *sync.WaitGroup) {
 	}
 }
 
-func (w *Worker) doReduceWork(task *Task, interFilenames []string, stageChan chan int, wg *sync.WaitGroup) {
-	wg.Add(1)
-	task.Status = TaskStatusDoing
+func (w *Worker) doReduceWork(task *Task, stage *int) {
 	log.Printf("[Worker.doReduceWork] begin to reduce the #%d list of files", task.Idx)
 
 	var err error
 	var kva []common.KeyValue
 	defer func() {
-		wg.Done()
-		stage := reportTask(task, nil, err)
-		if stage == StageDone {
-			stageChan <- StageDone
-		}
+		*stage = reportTask(task, err)
 	}()
 
+	interFilenames := task.Filenames
 	for _, interFilename := range interFilenames {
 		var interFile *os.File
 		interFile, err = os.Open(interFilename)
@@ -187,34 +160,16 @@ func (w *Worker) doReduceWork(task *Task, interFilenames []string, stageChan cha
 	}
 }
 
-func (w *Worker) convertFileToKVArray(filename string) []common.KeyValue {
-	file, err := os.Open(filename)
-	defer file.Close()
-
-	if err != nil {
-		log.Fatalf("cannot open %v", filename)
-	}
-
-	content, err := ioutil.ReadAll(file)
-	if err != nil {
-		log.Fatalf("cannot read %v", filename)
-	}
-
-	return w.mapFunc(filename, string(content))
-}
-
-func getTask() *TaskReply {
-	args := &DummyArgs{}
-	reply := &TaskReply{}
-
-	if ok := call("Coordinator.AssignTask", args, reply); !ok {
+func getTask() *Task {
+	task := &Task{}
+	if ok := call("Coordinator.AssignTask", &DummyArgs{}, task); !ok {
 		log.Printf("[getTask] call failed!")
 		return nil
 	}
-	return reply
+	return task
 }
 
-func reportTask(task *Task, filenames []string, err error) int {
+func reportTask(task *Task, err error) int {
 	var taskType string
 	switch task.Type {
 	case TaskTypeMap:
@@ -230,12 +185,8 @@ func reportTask(task *Task, filenames []string, err error) int {
 		log.Printf("[reportTask] %s task #%d completed", taskType, task.Idx)
 	}
 
-	args := &ReportArgs{
-		Task:      task,
-		Filenames: filenames,
-	}
 	reply := ReportReply(-1)
-	if ok := call("Coordinator.ReportTask", args, &reply); !ok {
+	if ok := call("Coordinator.ReportTask", task, &reply); !ok {
 		log.Printf("[reportTask] call failed!")
 	}
 	return int(reply)
