@@ -64,6 +64,7 @@ func (w *MultiWorker) work(stageChan chan int, wg *sync.WaitGroup) {
 	if task == nil { // ignores tasks which failed to call rpc
 		return
 	}
+	log.Printf("[MultiWorker.work] task = %+v", *task)
 
 	switch task.Type {
 	case TaskTypeVoid:

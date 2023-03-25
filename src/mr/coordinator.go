@@ -75,8 +75,6 @@ func (c *Coordinator) assignMapTask(task *Task) {
 	var idx int
 	select {
 	case idx = <-c.redoTaskChan: // a failed task found, redo it
-		task = c.mapTasks[idx]
-		return
 	default:
 		c.indexMtx.Lock()
 		idx = c.fileIdx
@@ -87,21 +85,18 @@ func (c *Coordinator) assignMapTask(task *Task) {
 		return
 	}
 
-	task.Idx = idx
-	task.Type = TaskTypeMap
-	task.Status = TaskStatusDoing
-	task.Filenames = []string{c.files[idx]}
-	c.mapTasks[idx] = task
+	c.mapTasks[idx].Status = TaskStatusDoing
+	task.Copy(c.mapTasks[idx])
 	go c.checkTaskAsync(idx, c.mapTasks)
 }
 
 // assignReduceTask assigns a reduce task included in reply
 func (c *Coordinator) assignReduceTask(task *Task) {
+	isRedo := false
 	var idx int
 	select {
 	case idx = <-c.redoTaskChan: // a failed task found, redo it
-		task = c.reduceTasks[idx]
-		return
+		isRedo = true
 	default:
 		c.indexMtx.Lock()
 		idx = c.reduceIdx
@@ -112,11 +107,11 @@ func (c *Coordinator) assignReduceTask(task *Task) {
 		return
 	}
 
-	task.Idx = idx
-	task.Type = TaskTypeReduce
-	task.Status = TaskStatusDoing
-	task.Filenames = c.interMap[idx]
-	c.reduceTasks[idx] = task
+	if !isRedo {
+		c.reduceTasks[idx].Status = TaskStatusDoing
+		c.reduceTasks[idx].Filenames = c.interMap[idx]
+	}
+	task.Copy(c.reduceTasks[idx])
 	go c.checkTaskAsync(idx, c.reduceTasks)
 }
 
@@ -196,6 +191,7 @@ func (c *Coordinator) reportReduceTask(task *Task, reply *ReportReply) error {
 func (c *Coordinator) checkTaskAsync(idx int, tasks []*Task) {
 	time.Sleep(CheckTaskSleepSec * time.Second)
 	if tasks[idx].Status == TaskStatusDoing {
+		log.Printf("[Coordinator.checkTaskAsync] found a task {%+v} hasn't been completed, redo it!", *tasks[idx])
 		c.redoTaskChan <- idx
 	}
 }
@@ -240,6 +236,23 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 		redoTaskChan: make(chan int),
 		mapTasks:     make([]*Task, len(files)),
 		reduceTasks:  make([]*Task, nReduce),
+	}
+
+	// prepare tasks in advance
+	for i := 0; i < c.nFile; i++ {
+		c.mapTasks[i] = &Task{
+			Idx:       i,
+			Type:      TaskTypeMap,
+			Status:    TaskStatusReady,
+			Filenames: []string{c.files[i]},
+		}
+	}
+	for i := 0; i < c.nReduce; i++ {
+		c.reduceTasks[i] = &Task{
+			Idx:    i,
+			Type:   TaskTypeReduce,
+			Status: TaskStatusReady,
+		}
 	}
 
 	c.serve()

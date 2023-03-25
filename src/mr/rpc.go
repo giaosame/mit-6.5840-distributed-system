@@ -13,7 +13,8 @@ const (
 )
 
 const (
-	TaskStatusDoing = iota
+	TaskStatusReady = iota
+	TaskStatusDoing
 	TaskStatusDone
 	TaskStatusFailed
 )
@@ -23,6 +24,13 @@ type Task struct {
 	Type      uint8
 	Status    uint8
 	Filenames []string
+}
+
+func (t *Task) Copy(task *Task) {
+	t.Idx = task.Idx
+	t.Type = task.Type
+	t.Status = task.Status
+	t.Filenames = task.Filenames
 }
 
 type DummyArgs struct{}

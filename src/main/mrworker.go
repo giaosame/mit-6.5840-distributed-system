@@ -40,7 +40,6 @@ func main() {
 		w := mr.MakeWorker(mapFunc, reduceFunc)
 		w.MapReduce()
 	} else if os.Args[2] == MultiModeArg {
-		log.Println(MultiModeArg)
 		mw := mr.MakeMultiWorker(mapFunc, reduceFunc)
 		mw.MapReduce()
 	}
