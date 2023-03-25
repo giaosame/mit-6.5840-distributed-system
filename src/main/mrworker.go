@@ -10,13 +10,13 @@
 package main
 
 import (
-	"6.5840/mr"
 	"errors"
 	"fmt"
 	"log"
 	"os"
 
 	"6.5840/common"
+	"6.5840/mr"
 )
 
 const MultiModeArg = "multi-mode"
@@ -40,7 +40,6 @@ func main() {
 		w := mr.MakeWorker(mapFunc, reduceFunc)
 		w.MapReduce()
 	} else if os.Args[2] == MultiModeArg {
-		log.Println(MultiModeArg)
 		mw := mr.MakeMultiWorker(mapFunc, reduceFunc)
 		mw.MapReduce()
 	}

@@ -13,7 +13,8 @@ runs=$1
 chmod +x test-mr.sh
 
 for i in $(seq 1 $runs); do
-    timeout -k 2s 900s ./test-mr.sh &
+#    timeout -k 2s 900s ./test-mr.sh &
+    ./test-mr.sh &  # run without timeout for MacOS
     pid=$!
     if ! wait $pid; then
         echo '***' FAILED TESTS IN TRIAL $i

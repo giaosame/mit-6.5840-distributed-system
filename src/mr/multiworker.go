@@ -15,7 +15,7 @@ import (
 	"6.5840/common"
 )
 
-const MultiMapReduceSleepFactor = 10
+const MultiMapReduceSleepMilliSec = 10
 
 // MultiWorker generates multiple worker goroutines
 type MultiWorker struct {
@@ -53,7 +53,7 @@ func (w *MultiWorker) MapReduce() {
 		} else {
 			wg.Wait()
 		}
-		time.Sleep(MultiMapReduceSleepFactor * time.Millisecond)
+		time.Sleep(MultiMapReduceSleepMilliSec * time.Millisecond)
 	}
 	log.Println("[MultiWorker.MapReduce] completed successfully!")
 	time.Sleep(time.Second)
@@ -64,6 +64,7 @@ func (w *MultiWorker) work(stageChan chan int, wg *sync.WaitGroup) {
 	if task == nil { // ignores tasks which failed to call rpc
 		return
 	}
+	log.Printf("[MultiWorker.work] task = %+v", *task)
 
 	switch task.Type {
 	case TaskTypeVoid:
