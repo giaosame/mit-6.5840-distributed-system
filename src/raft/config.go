@@ -8,22 +8,25 @@ package raft
 // test with the original before submitting.
 //
 
-import "6.5840/labgob"
-import "6.5840/labrpc"
-import "bytes"
-import "log"
-import "sync"
-import "sync/atomic"
-import "testing"
-import "runtime"
-import "math/rand"
-import crand "crypto/rand"
-import "math/big"
-import "encoding/base64"
-import "time"
-import "fmt"
+import (
+	"bytes"
+	crand "crypto/rand"
+	"encoding/base64"
+	"fmt"
+	"log"
+	"math/big"
+	"math/rand"
+	"runtime"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
 
-func randstring(n int) string {
+	"6.5840/labgob"
+	"6.5840/labrpc"
+)
+
+func randString(n int) string {
 	b := make([]byte, 2*n)
 	crand.Read(b)
 	s := base64.URLEncoding.EncodeToString(b)
@@ -38,11 +41,21 @@ func makeSeed() int64 {
 }
 
 type config struct {
-	mu          sync.Mutex
-	t           *testing.T
-	finished    int32
-	net         *labrpc.Network
-	n           int
+	n         int
+	rpcs0     int // rpcTotal() at start of test
+	cmds0     int // number of agreements
+	bytes0    int64
+	maxIndex  int
+	maxIndex0 int
+	finished  int32
+
+	mu    sync.Mutex
+	t     *testing.T
+	net   *labrpc.Network
+	start time.Time // time at which makeConfig() was called
+	t0    time.Time // time at which test_test.go called cfg.begin()
+	// begin()/end() statistics
+
 	rafts       []*Raft
 	applyErr    []string // from apply channel readers
 	connected   []bool   // whether each server is on the net
@@ -50,19 +63,11 @@ type config struct {
 	endnames    [][]string            // the port file names each sends to
 	logs        []map[int]interface{} // copy of each server's committed entries
 	lastApplied []int
-	start       time.Time // time at which make_config() was called
-	// begin()/end() statistics
-	t0        time.Time // time at which test_test.go called cfg.begin()
-	rpcs0     int       // rpcTotal() at start of test
-	cmds0     int       // number of agreements
-	bytes0    int64
-	maxIndex  int
-	maxIndex0 int
 }
 
 var ncpu_once sync.Once
 
-func make_config(t *testing.T, n int, unreliable bool, snapshot bool) *config {
+func makeConfig(t *testing.T, n int, unreliable bool, snapshot bool) *config {
 	ncpu_once.Do(func() {
 		if runtime.NumCPU() < 2 {
 			fmt.Printf("warning: only one CPU, which may conceal locking bugs\n")
@@ -277,7 +282,7 @@ func (cfg *config) start1(i int, applier func(int, chan ApplyMsg)) {
 	// so that old crashed instance's ClientEnds can't send.
 	cfg.endnames[i] = make([]string, cfg.n)
 	for j := 0; j < cfg.n; j++ {
-		cfg.endnames[i][j] = randstring(20)
+		cfg.endnames[i][j] = randString(20)
 	}
 
 	// a fresh set of ClientEnds.
