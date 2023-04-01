@@ -1,11 +1,10 @@
 package raft
 
 //
-// this is an outline of the API that raft must expose to
-// the service (or tester). see comments below for
-// each of these functions for more details.
+// This is an outline of the API that raft must expose to the service (or tester).
+// Please see comments below for each of these functions for more details.
 //
-// rf = Make(...)
+// rf = MakeRaft(...)
 //   create a new Raft server.
 // rf.Start(command interface{}) (index, term, isleader)
 //   start agreement on a new log entry
@@ -49,28 +48,36 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
-// Raft is a Go object implementing a single Raft peer.
+// Raft implements a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
-	me        int                 // this peer's index into peers[]
+	myIdx     int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
 
-	// Your data here (2A, 2B, 2C).
-	// Look at the paper's Figure 2 for a description of what
-	// state a Raft server must maintain.
+	// TODO: 2B, 2C. Look at the paper's Figure 2 for a description of what state a Raft server must maintain.
 
+	// ========= persistent state on all servers =========
+	currentTerm int           // latest term server has seen (initialized to 0 on first boot, increases monotonically)
+	votedFor    int           // candidateId that received vote in current term (or null if none)
+	logs        []interface{} // each entry contains command for state machine, and term when entry was received by leader
+
+	// ========= volatile state on all servers =========
+	commitIndex int // index of the highest log entry known to be committed
+	lastApplied int // index of the highest log entry applied to state machine
+
+	// ========= volatile state on all servers =========
+	nextIndices  []int // for each server, index of the next log entry to send to that server
+	matchIndices []int // for each server, index of the highest log entry known to be replicated on server
 }
 
-// return currentTerm and whether this server
-// believes it is the leader.
+// GetState returns currentTerm and whether this server believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
 	var term int
-	var isleader bool
+	var isLeader bool
 	// Your code here (2A).
-	return term, isleader
+	return term, isLeader
 }
 
 // save Raft's persistent state to stable storage,
@@ -120,21 +127,24 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
+// RequestVoteArgs represents RequestVote RPC arguments structure
+type RequestVoteArgs struct { // TODO: 2B
+	Term         int // candidate’s term
+	CandidateId  int // candidate requesting vote
+	LastLogIndex int // index of candidate’s last log entry
+	LastLogTerm  int // term of candidate’s last log entry
 }
 
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
+// RequestVoteReply represents RequestVote RPC reply structure
 type RequestVoteReply struct {
-	// Your data here (2A).
+	Term        int  // currentTerm, for candidate to update itself
+	VoteGranted bool // true means candidate received vote
 }
 
-// example RequestVote RPC handler.
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+// RequestVote is invoked by candidates to gather votes
+func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) { // TODO: 2B
 	// Your code here (2A, 2B).
+
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -223,16 +233,16 @@ func (rf *Raft) ticker() {
 	}
 }
 
-// Make the service or tester create a Raft server. The ports of all the Raft servers (including this one)
-// are in peers[]. This server's port is peers[me]. all the servers' peers[] arrays have the same order.
+// MakeRaft creates a Raft server. The ports of all the Raft servers (including this one) are in peers[].
+// This server's port is peers[myIdx]. All the servers' peers[] arrays have the same order.
 // persister is a place for this server to save its persistent state, and also initially holds the most recent saved
 // state, if any. applyCh is a channel on which the tester or service expects Raft to send ApplyMsg messages.
 // Make must return quickly, so it should start goroutines for any long-running work.
-func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan ApplyMsg) *Raft {
+func MakeRaft(peers []*labrpc.ClientEnd, myIdx int, persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister
-	rf.me = me
+	rf.myIdx = myIdx
 
 	// Your initialization code here (2A, 2B, 2C).
 
@@ -241,6 +251,5 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
-
 	return rf
 }
