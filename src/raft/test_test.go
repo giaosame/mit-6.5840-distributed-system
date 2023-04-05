@@ -22,8 +22,8 @@ import (
 const RaftElectionTimeout = 1000 * time.Millisecond
 
 func TestInitialElection2A(t *testing.T) {
-	servers := 3
-	cfg := makeConfig(t, servers, false, false)
+	nServers := 3
+	cfg := makeConfig(t, nServers, false, false)
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2A): initial election")
@@ -53,8 +53,8 @@ func TestInitialElection2A(t *testing.T) {
 }
 
 func TestReElection2A(t *testing.T) {
-	servers := 3
-	cfg := makeConfig(t, servers, false, false)
+	nServers := 3
+	cfg := makeConfig(t, nServers, false, false)
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2A): election after network failure")
@@ -74,7 +74,7 @@ func TestReElection2A(t *testing.T) {
 	// if there's no quorum, no new leader should
 	// be elected.
 	cfg.disconnect(leader2)
-	cfg.disconnect((leader2 + 1) % servers)
+	cfg.disconnect((leader2 + 1) % nServers)
 	time.Sleep(2 * RaftElectionTimeout)
 
 	// check that the one connected server
@@ -82,7 +82,7 @@ func TestReElection2A(t *testing.T) {
 	cfg.checkNoLeader()
 
 	// if a quorum arises, it should elect a leader.
-	cfg.connect((leader2 + 1) % servers)
+	cfg.connect((leader2 + 1) % nServers)
 	cfg.checkOneLeader()
 
 	// re-join of last node shouldn't prevent leader from existing.
@@ -93,8 +93,8 @@ func TestReElection2A(t *testing.T) {
 }
 
 func TestManyElections2A(t *testing.T) {
-	servers := 7
-	cfg := makeConfig(t, servers, false, false)
+	nServers := 7
+	cfg := makeConfig(t, nServers, false, false)
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2A): multiple elections")
@@ -104,9 +104,9 @@ func TestManyElections2A(t *testing.T) {
 	iters := 10
 	for ii := 1; ii < iters; ii++ {
 		// disconnect three nodes
-		i1 := rand.Int() % servers
-		i2 := rand.Int() % servers
-		i3 := rand.Int() % servers
+		i1 := rand.Int() % nServers
+		i2 := rand.Int() % nServers
+		i3 := rand.Int() % nServers
 		cfg.disconnect(i1)
 		cfg.disconnect(i2)
 		cfg.disconnect(i3)
@@ -409,7 +409,7 @@ loop:
 			cmd := cfg.wait(index, servers, term)
 			if ix, ok := cmd.(int); ok {
 				if ix == -1 {
-					// peers have moved on to later terms
+					// peers have moved on to later terms,
 					// so we can't expect all Start()s to
 					// have succeeded
 					failed = true
@@ -880,7 +880,7 @@ func TestUnreliableAgree2C(t *testing.T) {
 		cfg.one(iters, 1, true)
 	}
 
-	cfg.setunreliable(false)
+	cfg.setUnreliable(false)
 
 	wg.Wait()
 
@@ -901,7 +901,7 @@ func TestFigure8Unreliable2C(t *testing.T) {
 	nup := servers
 	for iters := 0; iters < 1000; iters++ {
 		if iters == 200 {
-			cfg.setlongreordering(true)
+			cfg.setLongReordering(true)
 		}
 		leader := -1
 		for i := 0; i < servers; i++ {
@@ -1041,7 +1041,7 @@ func internalChurn(t *testing.T, unreliable bool) {
 	}
 
 	time.Sleep(RaftElectionTimeout)
-	cfg.setunreliable(false)
+	cfg.setUnreliable(false)
 	for i := 0; i < servers; i++ {
 		if cfg.rafts[i] == nil {
 			cfg.start1(i, cfg.applier)

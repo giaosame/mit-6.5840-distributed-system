@@ -17,7 +17,7 @@ package raft
 //
 
 import (
-	//	"bytes"
+	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -26,6 +26,8 @@ import (
 	//	"6.5840/labgob"
 	"6.5840/labrpc"
 )
+
+const NullCandidate = -1
 
 // as each Raft peer becomes aware that successive log entries are
 // committed, the peer should send an ApplyMsg to the service (or
@@ -74,9 +76,8 @@ type Raft struct {
 
 // GetState returns currentTerm and whether this server believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-	var term int
-	var isLeader bool
-	// Your code here (2A).
+	term := rf.currentTerm
+	isLeader := rf.votedFor == rf.myIdx
 	return term, isLeader
 }
 
@@ -143,15 +144,28 @@ type RequestVoteReply struct {
 
 // RequestVote is invoked by candidates to gather votes
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) { // TODO: 2B
-	// Your code here (2A, 2B).
+	// TODO: Your code here (2B).
+	if args.Term < rf.currentTerm {
+		reply.Term = rf.currentTerm
+		return
+	}
 
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+	}
+
+	reply.Term = args.Term
+	if rf.votedFor == NullCandidate {
+		rf.votedFor = args.CandidateId
+		reply.VoteGranted = true
+	}
 }
 
 // example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
+// serverIdx is the index of the target server in rf.peers[].
 // expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
+// fills in *reply with RPC reply, so caller should pass &reply.
+//
 // the types of the args and reply passed to Call() must be
 // the same as the types of the arguments declared in the
 // handler function (including whether they are pointers).
@@ -165,7 +179,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) { //
 // can't be reached, a lost request, or a lost reply.
 //
 // Call() is guaranteed to return (perhaps after a delay) *except* if the
-// handler function on the server side does not return.  Thus there
+// handler function on the server side does not return. Thus, there
 // is no need to implement your own timeouts around Call().
 //
 // look at the comments in ../labrpc/labrpc.go for more details.
@@ -174,8 +188,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) { //
 // capitalized all field names in structs passed over RPC, and
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+func (rf *Raft) sendRequestVote(serverIdx int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	ok := rf.peers[serverIdx].Call("Raft.RequestVote", args, reply)
 	return ok
 }
 
@@ -222,14 +236,44 @@ func (rf *Raft) killed() bool {
 
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
-
-		// Your code here (2A)
-		// Check if a leader election should be started.
-
-		// pause for a random amount of time between 50 and 350
-		// milliseconds.
+		// pause for a random amount of time between 50 and 350 milliseconds.
 		ms := 50 + (rand.Int63() % 300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
+
+		// check if a leader election should be started
+		if rf.votedFor > NullCandidate {
+			return
+		}
+
+		rf.currentTerm++
+		nVotes := 1
+		for i := range rf.peers {
+			if i == rf.myIdx {
+				continue
+			}
+
+			reqVoteArgs := RequestVoteArgs{
+				Term:        rf.currentTerm,
+				CandidateId: rf.myIdx,
+				//LastLogIndex: 0,
+				//LastLogTerm: 0,
+			}
+			reqVoteReply := RequestVoteReply{}
+			if rf.sendRequestVote(i, &reqVoteArgs, &reqVoteReply) {
+				log.Println("[Raft.ticker] failed to send RequestVote")
+			}
+			if reqVoteReply.Term > rf.currentTerm {
+				rf.currentTerm = reqVoteReply.Term
+				break
+			}
+			if reqVoteReply.VoteGranted {
+				nVotes++
+			}
+		}
+
+		if nVotes > (len(rf.peers)+1)/2 {
+			rf.votedFor = rf.myIdx
+		}
 	}
 }
 
@@ -237,14 +281,15 @@ func (rf *Raft) ticker() {
 // This server's port is peers[myIdx]. All the servers' peers[] arrays have the same order.
 // persister is a place for this server to save its persistent state, and also initially holds the most recent saved
 // state, if any. applyCh is a channel on which the tester or service expects Raft to send ApplyMsg messages.
-// Make must return quickly, so it should start goroutines for any long-running work.
+// MakeRaft must return quickly, so it should start goroutines for any long-running work.
 func MakeRaft(peers []*labrpc.ClientEnd, myIdx int, persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
 	rf.peers = peers
 	rf.persister = persister
 	rf.myIdx = myIdx
 
-	// Your initialization code here (2A, 2B, 2C).
+	// TODO: Your initialization code here (2B, 2C).
+	rf.votedFor = NullCandidate // -1 means this server hasn't voted yet for the current term
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
