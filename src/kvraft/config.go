@@ -251,7 +251,7 @@ func (cfg *config) DisconnectClient(ck *Clerk, from []int) {
 	cfg.DisconnectClientUnlocked(ck, from)
 }
 
-// Shutdown a server by isolating it
+// ShutdownServer shuts down a server by isolating it
 func (cfg *config) ShutdownServer(i int) {
 	cfg.mu.Lock()
 	defer cfg.mu.Unlock()
@@ -327,8 +327,8 @@ func (cfg *config) Leader() (bool, int) {
 	defer cfg.mu.Unlock()
 
 	for i := 0; i < cfg.n; i++ {
-		_, is_leader := cfg.kvservers[i].rf.GetState()
-		if is_leader {
+		_, isLeader := cfg.kvservers[i].rf.GetState()
+		if isLeader {
 			return true, i
 		}
 	}
