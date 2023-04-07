@@ -282,8 +282,7 @@ func (rn *Network) processReq(req reqMsg) {
 		// simulate no reply and eventual timeout.
 		ms := 0
 		if rn.longDelays {
-			// let Raft tests check that leader doesn't send
-			// RPCs synchronously.
+			// let Raft tests check that leader doesn't send RPCs synchronously.
 			ms = (rand.Int() % 7000)
 		} else {
 			// many kv tests require the client to try each
@@ -294,7 +293,6 @@ func (rn *Network) processReq(req reqMsg) {
 			req.replyCh <- replyMsg{false, nil}
 		})
 	}
-
 }
 
 // MakeEnd creates a client end-point, starting the thread that listens and delivers
@@ -322,19 +320,19 @@ func (rn *Network) AddServer(serverName interface{}, rs *Server) {
 	rn.servers[serverName] = rs
 }
 
-func (rn *Network) DeleteServer(servername interface{}) {
+func (rn *Network) DeleteServer(serverName interface{}) {
 	rn.mu.Lock()
 	defer rn.mu.Unlock()
-	rn.servers[servername] = nil
+	rn.servers[serverName] = nil
 }
 
 // Connect connects a ClientEnd to a server.
 // A ClientEnd can only be connected once in its lifetime.
-func (rn *Network) Connect(endname interface{}, servername interface{}) {
+func (rn *Network) Connect(endName interface{}, serverName interface{}) {
 	rn.mu.Lock()
 	defer rn.mu.Unlock()
 
-	rn.connections[endname] = servername
+	rn.connections[endName] = serverName
 }
 
 // Enable enables/disables a ClientEnd.

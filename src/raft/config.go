@@ -376,7 +376,7 @@ func (cfg *config) connect(i int) {
 
 // disconnect detaches server i from the net.
 func (cfg *config) disconnect(i int) {
-	// fmt.Printf("disconnect(%d)\n", i)
+	log.Printf("[config.disconnect] disconnect the raft server %d", i)
 	cfg.connected[i] = false
 
 	// outgoing ClientEnds
@@ -616,14 +616,14 @@ func (cfg *config) end() {
 	if cfg.t.Failed() == false {
 		cfg.mu.Lock()
 		t := time.Since(cfg.t0).Seconds()       // real time
-		npeers := cfg.n                         // number of Raft peers
-		nrpc := cfg.rpcTotal() - cfg.rpcs0      // number of RPC sends
-		nbytes := cfg.bytesTotal() - cfg.bytes0 // number of bytes
-		ncmds := cfg.maxIndex - cfg.maxIndex0   // number of Raft agreements reported
+		nPeers := cfg.n                         // number of Raft peers
+		nRPC := cfg.rpcTotal() - cfg.rpcs0      // number of RPC sends
+		nBytes := cfg.bytesTotal() - cfg.bytes0 // number of bytes
+		nCmds := cfg.maxIndex - cfg.maxIndex0   // number of Raft agreements reported
 		cfg.mu.Unlock()
 
 		fmt.Printf("  ... Passed --")
-		fmt.Printf("  %4.1f  %d %4d %7d %4d\n", t, npeers, nrpc, nbytes, ncmds)
+		fmt.Printf("  %4.1f  %d %4d %7d %4d\n", t, nPeers, nRPC, nBytes, nCmds)
 	}
 }
 
