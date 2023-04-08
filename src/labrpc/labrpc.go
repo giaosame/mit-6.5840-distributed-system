@@ -283,11 +283,11 @@ func (rn *Network) processReq(req reqMsg) {
 		ms := 0
 		if rn.longDelays {
 			// let Raft tests check that leader doesn't send RPCs synchronously.
-			ms = (rand.Int() % 7000)
+			ms = rand.Int() % 7000
 		} else {
 			// many kv tests require the client to try each
 			// server in fairly rapid succession.
-			ms = (rand.Int() % 100)
+			ms = rand.Int() % 100
 		}
 		time.AfterFunc(time.Duration(ms)*time.Millisecond, func() {
 			req.replyCh <- replyMsg{false, nil}
