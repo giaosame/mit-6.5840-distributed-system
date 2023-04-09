@@ -353,7 +353,7 @@ func (cfg *config) cleanup() {
 
 // connect attaches server i to the net.
 func (cfg *config) connect(i int) {
-	// fmt.Printf("connect(%d)\n", i)
+	log.Printf("[config.disconnect] connect the raft server %d", i)
 	cfg.connected[i] = true
 
 	// TODO: merge the outgoing loop and incoming loop into one

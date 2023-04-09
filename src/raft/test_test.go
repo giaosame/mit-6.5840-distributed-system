@@ -58,21 +58,17 @@ func TestReElection2A(t *testing.T) {
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2A): election after network failure")
-	log.Println("====== TestReElection2A Check 1 ======")
 	leader1 := cfg.checkOneLeader()
 
-	log.Println("====== TestReElection2A Check 2 ======")
 	// if the leader disconnects, a new one should be elected.
 	cfg.disconnect(leader1)
 	cfg.checkOneLeader()
 
-	log.Println("====== TestReElection2A Check 3 ======")
 	// if the old leader rejoins, that shouldn't disturb the new leader. and the old leader
 	// should switch to follower.
 	cfg.connect(leader1)
 	leader2 := cfg.checkOneLeader()
 
-	log.Println("====== TestReElection2A Check 4 ======")
 	// if there's no quorum, no new leader should be elected
 	cfg.disconnect(leader2)
 	cfg.disconnect((leader2 + 1) % nServers)
@@ -81,15 +77,13 @@ func TestReElection2A(t *testing.T) {
 	// check that the one connected server does not think it is the leader
 	cfg.checkNoLeader()
 
-	//log.Println("====== TestReElection2A Check 5 ======")
-	//// if a quorum arises, it should elect a leader
-	//cfg.connect((leader2 + 1) % nServers)
-	//cfg.checkOneLeader()
-	//
-	//// re-join of last node shouldn't prevent leader from existing
-	//log.Println("====== TestReElection2A Check 6 ======")
-	//cfg.connect(leader2)
-	//cfg.checkOneLeader()
+	// if a quorum arises, it should elect a leader
+	cfg.connect((leader2 + 1) % nServers)
+	cfg.checkOneLeader()
+
+	// re-join of last node shouldn't prevent leader from existing
+	cfg.connect(leader2)
+	cfg.checkOneLeader()
 
 	cfg.end()
 }
@@ -105,6 +99,7 @@ func TestManyElections2A(t *testing.T) {
 
 	iters := 10
 	for ii := 1; ii < iters; ii++ {
+		log.Printf("[TestManyElections2A] ====== iter {%d} ======", ii)
 		// disconnect three nodes
 		i1 := rand.Int() % nServers
 		i2 := rand.Int() % nServers
@@ -123,7 +118,6 @@ func TestManyElections2A(t *testing.T) {
 	}
 
 	cfg.checkOneLeader()
-
 	cfg.end()
 }
 
