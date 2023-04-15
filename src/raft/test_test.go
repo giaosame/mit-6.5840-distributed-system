@@ -94,10 +94,9 @@ func TestManyElections2A(t *testing.T) {
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2A): multiple elections")
-
 	cfg.checkOneLeader()
 
-	iters := 10
+	iters := 1000
 	for ii := 1; ii < iters; ii++ {
 		log.Printf("[TestManyElections2A] ====== iter {%d} ======", ii)
 		// disconnect three nodes
