@@ -24,6 +24,7 @@ import (
 
 	"6.5840/labgob"
 	"6.5840/labrpc"
+	mylog "6.5840/log"
 )
 
 func randString(n int) string {
@@ -353,7 +354,7 @@ func (cfg *config) cleanup() {
 
 // connect attaches server i to the net.
 func (cfg *config) connect(i int) {
-	log.Printf("[config.disconnect] connect the raft server %d", i)
+	mylog.Debug("config.connect", "connect the raft server %d", i)
 	cfg.connected[i] = true
 
 	// TODO: merge the outgoing loop and incoming loop into one
@@ -376,7 +377,7 @@ func (cfg *config) connect(i int) {
 
 // disconnect detaches server i from the net.
 func (cfg *config) disconnect(i int) {
-	log.Printf("[config.disconnect] disconnect the raft server %d", i)
+	mylog.Debug("config.disconnect", "disconnect the raft server %d", i)
 	cfg.connected[i] = false
 
 	// outgoing ClientEnds

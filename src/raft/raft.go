@@ -17,7 +17,6 @@ package raft
 //
 
 import (
-	"log"
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -25,6 +24,7 @@ import (
 
 	//	"6.5840/labgob"
 	"6.5840/labrpc"
+	"6.5840/log"
 )
 
 const (
@@ -180,7 +180,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	rf.currentTerm = args.Term
 	if rf.votedFor == NullCandidate || rf.votedFor == args.CandidateId || rf.state == Leader {
-		log.Printf("[Raft.RequestVote] raft server %d voted for %d previously, votes for the candidate %d", rf.myIdx, rf.votedFor, args.CandidateId)
+		log.Debug("Raft.RequestVote", "raft server %d voted for %d previously, votes for the candidate %d", rf.myIdx, rf.votedFor, args.CandidateId)
 		rf.state = Follower
 		rf.votedFor = args.CandidateId
 		reply.Term = args.Term
@@ -209,7 +209,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer func() {
 		rf.mtx.Unlock()
 		if heartbeat {
-			log.Printf("[Raft.AppendEntries] raft server %d received heartbeat from the leader %d", rf.myIdx, args.LeaderId)
+			log.Debug("Raft.AppendEntries", "raft server %d received heartbeat from the leader %d", rf.myIdx, args.LeaderId)
 			rf.heartbeatCh <- struct{}{}
 		}
 	}()
@@ -386,7 +386,6 @@ func (rf *Raft) heartbeat() {
 		// I ain't the leader, pause for a random amount of time between 50 and 350 milliseconds.
 		ms := ElectionTimeoutLowerBound + (rf.myRand.Int63() % ElectionTimeoutUpBoundRange)
 		electionTimeout := time.After(time.Duration(ms) * time.Millisecond)
-		//log.Printf("[Raft.heartbeat] raft server %d set %d ms time-out", rf.myIdx, ms)
 		select {
 		case <-electionTimeout:
 			rf.startElection()
@@ -397,7 +396,7 @@ func (rf *Raft) heartbeat() {
 }
 
 func (rf *Raft) startElection() {
-	log.Printf("[Raft.startElection] raft server %d starts the election!", rf.myIdx)
+	log.Debug("Raft.startElection", "raft server %d starts the election!", rf.myIdx)
 	var wg sync.WaitGroup
 	rf.state = Candidate
 	rf.votedFor = rf.myIdx
@@ -414,19 +413,17 @@ func (rf *Raft) startElection() {
 	}
 
 	wg.Wait()
-	log.Printf("[Raft.startElection] raft server %d got %d votes", rf.myIdx, nVotes)
+	log.Debug("Raft.startElection", "raft server %d got %d votes", rf.myIdx, nVotes)
 	if nVotes > nConnected/2 && nVotes > 1 && rf.state == Candidate {
-		log.Printf("[Raft.startElection] raft server %d becomes the leader", rf.myIdx)
 		rf.state = Leader
 	} else {
-		log.Printf("[Raft.startElection] raft server %d couldn't get enough votes", rf.myIdx)
 		rf.state = Follower
 		rf.votedFor = NullCandidate
 	}
 }
 
 func (rf *Raft) sendHeartBeat() {
-	log.Printf("[Raft.sendHeartBeat] raft server %d begins to send heartbeart...", rf.myIdx)
+	log.Debug("Raft.sendHeartBeat", "raft server %d begins to send heartbeat...", rf.myIdx)
 	var wg sync.WaitGroup
 	nReplies := 0
 	nConnected := 1
@@ -442,7 +439,7 @@ func (rf *Raft) sendHeartBeat() {
 	if rf.state == Leader && nReplies <= nConnected/2 {
 		rf.state = Follower
 		rf.votedFor = NullCandidate
-		log.Printf("[Raft.sendHeartBeat] raft server %d becomes a follower from leader", rf.myIdx)
+		log.Debug("Raft.sendHeartBeat", "raft server %d only got %d replies and is demoted to be a follower", rf.myIdx, nReplies)
 	}
 }
 

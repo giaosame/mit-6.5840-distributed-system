@@ -98,7 +98,7 @@ func TestManyElections2A(t *testing.T) {
 
 	iters := 100
 	for ii := 1; ii < iters; ii++ {
-		log.Printf("[TestManyElections2A] ====== iter {%d} ======", ii)
+		log.Printf("[TestManyElections2A] ========= iter {%d} =========", ii)
 		// disconnect three nodes
 		i1 := rand.Int() % nServers
 		i2 := rand.Int() % nServers
