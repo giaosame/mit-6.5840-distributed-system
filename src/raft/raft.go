@@ -426,7 +426,7 @@ func (rf *Raft) sendHeartBeat() {
 	log.Debug("Raft.sendHeartBeat", "raft server %d begins to send heartbeat...", rf.myIdx)
 	var wg sync.WaitGroup
 	nReplies := 0
-	nConnected := 1
+	nConnected := 0
 	for i := range rf.peers {
 		if i == rf.myIdx {
 			continue
