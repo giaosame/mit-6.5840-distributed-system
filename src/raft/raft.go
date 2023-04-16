@@ -160,8 +160,14 @@ type RequestVoteReply struct {
 
 // RequestVote is invoked by candidates to gather votes
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	heartbeat := false
 	rf.mtx.Lock()
-	defer rf.mtx.Unlock()
+	defer func() {
+		rf.mtx.Unlock()
+		if heartbeat {
+			rf.heartbeatCh <- struct{}{}
+		}
+	}()
 
 	// TODO: Your code here (2B).
 	if args.Term == rf.currentTerm {
@@ -172,16 +178,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 
-	log.Printf("[Raft.AppendEntries] raft server %d's term = %d, candidate's (%d) term = %d", rf.myIdx, rf.currentTerm, args.CandidateId, args.Term)
 	rf.currentTerm = args.Term
 	if rf.votedFor == NullCandidate || rf.votedFor == args.CandidateId || rf.state == Leader {
 		log.Printf("[Raft.RequestVote] raft server %d voted for %d previously, votes for the candidate %d", rf.myIdx, rf.votedFor, args.CandidateId)
-		log.Printf("[Raft.RequestVote] RequestVoteArgs = {%+v}", *args)
 		rf.state = Follower
 		rf.votedFor = args.CandidateId
-		rf.heartbeatCh <- struct{}{}
 		reply.Term = args.Term
 		reply.VoteGranted = true
+		heartbeat = true
 	}
 }
 
@@ -200,11 +204,18 @@ type AppendEntriesReply struct {
 }
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	heartbeat := false
 	rf.mtx.Lock()
-	defer rf.mtx.Unlock()
+	defer func() {
+		rf.mtx.Unlock()
+		if heartbeat {
+			log.Printf("[Raft.AppendEntries] raft server %d received heartbeat from the leader %d", rf.myIdx, args.LeaderId)
+			rf.heartbeatCh <- struct{}{}
+		}
+	}()
+
 	myTerm := rf.currentTerm
 	leaderTerm := args.Term
-	log.Printf("[Raft.AppendEntries] raft server %d's term = %d, leader's (%d) term = %d", rf.myIdx, myTerm, args.LeaderId, leaderTerm)
 	if myTerm > leaderTerm {
 		reply.Term = myTerm
 		return
@@ -213,8 +224,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.state = Follower
 	rf.votedFor = args.LeaderId
 	rf.currentTerm = leaderTerm
-	rf.heartbeatCh <- struct{}{}
-	log.Printf("[Raft.AppendEntries] raft server %d received heartbeat from the leader %d", rf.myIdx, args.LeaderId)
+	heartbeat = true
 }
 
 // The labrpc package simulates a lossy network, in which servers
@@ -314,7 +324,6 @@ func (rf *Raft) sendAppendEntries(wg *sync.WaitGroup, serverIdx int, nReplies *i
 
 	rf.mtx.Lock()
 	if appendEntriesReply.Term > rf.currentTerm {
-		log.Printf("[Raft.sendAppendEntries] appendEntriesReply.Term > rf.currentTerm: raft server %d with term %d, reply = {%+v}", rf.myIdx, rf.currentTerm, appendEntriesReply)
 		rf.currentTerm = appendEntriesReply.Term
 		rf.votedFor = NullCandidate
 		rf.state = Follower
@@ -407,12 +416,12 @@ func (rf *Raft) startElection() {
 	wg.Wait()
 	log.Printf("[Raft.startElection] raft server %d got %d votes", rf.myIdx, nVotes)
 	if nVotes > nConnected/2 && nVotes > 1 && rf.state == Candidate {
-		rf.state = Leader
 		log.Printf("[Raft.startElection] raft server %d becomes the leader", rf.myIdx)
+		rf.state = Leader
 	} else {
+		log.Printf("[Raft.startElection] raft server %d couldn't get enough votes", rf.myIdx)
 		rf.state = Follower
 		rf.votedFor = NullCandidate
-		log.Printf("[Raft.startElection] raft server %d couldn't get enough votes", rf.myIdx)
 	}
 }
 
@@ -430,7 +439,6 @@ func (rf *Raft) sendHeartBeat() {
 	}
 
 	wg.Wait()
-	log.Printf("[Raft.sendHeartBeat] raft server %d got %d replies", rf.myIdx, nReplies)
 	if rf.state == Leader && nReplies <= nConnected/2 {
 		rf.state = Follower
 		rf.votedFor = NullCandidate
