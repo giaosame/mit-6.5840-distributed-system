@@ -27,14 +27,6 @@ import (
 	"6.5840/log"
 )
 
-const (
-	NullCandidate               = -1
-	HeartBeatIntervalMS         = 100
-	RespWaitingTimeoutMS        = 125
-	ElectionTimeoutLowerBound   = 300
-	ElectionTimeoutUpBoundRange = 500
-)
-
 // Raft state
 const (
 	Follower = iota
@@ -63,6 +55,11 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
+type LogEntry struct {
+	Command interface{}
+	Term    int
+}
+
 // Raft implements a single Raft peer.
 type Raft struct {
 	mtx     sync.Mutex // Lock to protect shared access to this peer's state
@@ -78,10 +75,10 @@ type Raft struct {
 	// TODO: 2B, 2C. Look at the paper's Figure 2 for a description of what state a Raft server must maintain.
 
 	// ========= persistent state on all servers =========
-	state       int           // current state of the server
-	currentTerm int           // latest term server has seen (initialized to 0 on first boot, increases monotonically)
-	votedFor    int           // candidateId that received vote in current term (or null if none)
-	logs        []interface{} // each entry contains command for state machine, and term when entry was received by leader
+	state       int        // current state of the server
+	currentTerm int        // latest term server has seen (initialized to 0 on first boot, increases monotonically)
+	votedFor    int        // candidateId that received vote in current term (or null if none)
+	logs        []LogEntry // each entry contains command for state machine, and term when entry was received by leader
 
 	// ========= volatile state on all servers =========
 	commitIndex int // index of the highest log entry known to be committed
@@ -333,26 +330,33 @@ func (rf *Raft) sendAppendEntries(wg *sync.WaitGroup, serverIdx int, nReplies *i
 	rf.mtx.Unlock()
 }
 
-// the service using Raft (e.g. a k/v server) wants to start
-// agreement on the next command to be appended to Raft's log. if this
-// server isn't the leader, returns false. otherwise start the
-// agreement and return immediately. there is no guarantee that this
-// command will ever be committed to the Raft log, since the leader
-// may fail or lose an election. even if the Raft instance has been killed,
-// this function should return gracefully.
+// Start is called by the service using Raft (e.g. a k/v server)
+// which wants to start agreement on the next command to be appended to Raft's log.
+// * If this server isn't the leader, returns false.
+// * Otherwise, start the agreement and return immediately.
+// There is no guarantee that this command will ever be committed to the Raft log, since the leader
+// may fail or lose an election. Even if the Raft instance has been killed, this function should return gracefully.
 //
-// the first return value is the index that the command will appear at
-// if it's ever committed. the second return value is the current
-// term. the third return value is true if this server believes it is
-// the leader.
-func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
+// Return values:
+// * index:    the index that the command will appear at if it's ever committed
+// * term:     the current term
+// * isLeader: true if this server believes it is the leader
+func (rf *Raft) Start(command interface{}) (int, int, bool) { // TODO: rename it to StartAgreement?
+	if rf.state != Leader {
+		return -1, -1, false
+	}
 
-	// Your code here (2B).
-
-	return index, term, isLeader
+	// TODO: Your code here (2B).
+	rf.mtx.Lock()
+	index := len(rf.logs)
+	term := rf.currentTerm
+	entry := LogEntry{
+		Term:    term,
+		Command: command,
+	}
+	rf.logs = append(rf.logs, entry)
+	rf.mtx.Unlock()
+	return index, term, true
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -456,8 +460,9 @@ func MakeRaft(peers []*labrpc.ClientEnd, myIdx int, persister *Persister, applyC
 
 	// TODO: Your initialization code here (2B, 2C).
 	rf.state = Follower
-	rf.votedFor = NullCandidate // -1 means this server hasn't voted yet for the current term
+	rf.votedFor = NullCandidate
 	rf.heartbeatCh = make(chan struct{})
+	rf.logs = []LogEntry{{}} // to make logs' first index 1
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
