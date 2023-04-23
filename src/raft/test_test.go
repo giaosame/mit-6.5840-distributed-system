@@ -97,8 +97,8 @@ func TestManyElections2A(t *testing.T) {
 	cfg.checkOneLeader()
 
 	iters := 100
-	for ii := 1; ii < iters; ii++ {
-		log.Printf("[TestManyElections2A] ========= iter {%d} =========", ii)
+	for idx := 1; idx < iters; idx++ {
+		log.Printf("[TestManyElections2A] ========= iter {%d} =========", idx)
 		// disconnect three nodes
 		i1 := rand.Int() % nServers
 		i2 := rand.Int() % nServers
@@ -128,15 +128,16 @@ func TestBasicAgree2B(t *testing.T) {
 	cfg.begin("Test (2B): basic agreement")
 
 	iters := 3
-	for index := 1; index < iters+1; index++ {
-		nd, _ := cfg.nCommitted(index)
+	for idx := 1; idx < iters+1; idx++ {
+		// nd represents how many servers think a log entry is committed
+		nd, _ := cfg.nCommitted(idx)
 		if nd > 0 {
 			t.Fatalf("some have committed before Start()")
 		}
 
-		xindex := cfg.one(index*100, servers, false)
-		if xindex != index {
-			t.Fatalf("got index %v but expected %v", xindex, index)
+		index := cfg.one(idx*100, servers, false)
+		if index != idx {
+			t.Fatalf("got index %v but expected %v", index, idx)
 		}
 	}
 
