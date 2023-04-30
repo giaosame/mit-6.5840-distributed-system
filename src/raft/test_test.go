@@ -129,9 +129,9 @@ func TestBasicAgree2B(t *testing.T) {
 
 	iters := 3
 	for idx := 1; idx < iters+1; idx++ {
-		// nd represents how many servers think a log entry is committed
-		nd, _ := cfg.nCommitted(idx)
-		if nd > 0 {
+		// num represents how many servers think a log entry is committed
+		num, _ := cfg.nCommitted(idx)
+		if num > 0 {
 			t.Fatalf("some have committed before Start()")
 		}
 
