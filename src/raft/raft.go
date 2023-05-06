@@ -220,7 +220,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	prevLogIndex := args.PrevLogIndex
 	prevLogTerm := args.PrevLogTerm
-	if prevLogIndex >= rf.getLogLen() || rf.logs[prevLogIndex].Term != prevLogTerm {
+	if rf.logs[prevLogIndex].Term != prevLogTerm {
+		//log.Debug("Raft.AppendEntries", "rf.logs[prevLogIndex].Term = %d, prevLogTerm = %d", rf.logs[prevLogIndex].Term, prevLogTerm)
 		return // reply false if log does not contain an entry at prevLogIndex whose term matches prevLogTerm
 	}
 
@@ -243,6 +244,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.votedFor = args.LeaderId
 	rf.currentTerm = leaderTerm
 	heartbeat = true
+	reply.Success = true
 }
 
 // The labrpc package simulates a lossy network, in which servers
@@ -314,7 +316,7 @@ func (rf *Raft) sendRequestVote(wg *sync.WaitGroup, serverIdx int, nVotes *int, 
 func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int, nReplies *int, nConnected *int, newEntry LogEntry) {
 	defer wg.Done()
 	rf.mtx.Lock()
-	prevLogIndex := rf.nextIndices[serverIdx]
+	prevLogIndex := rf.nextIndices[serverIdx] - 1
 	prevLogTerm := rf.logs[prevLogIndex].Term
 	appendEntriesArgs := AppendEntriesArgs{
 		Term:         rf.currentTerm,
@@ -332,6 +334,7 @@ func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int, nRepli
 		appendEntriesArgs.PrevLogTerm = prevLogTerm
 		appendEntriesArgs.Entries = appendEntries
 		appendEntriesReply = AppendEntriesReply{}
+		log.Debug("Raft.AppendEntries", "appendEntriesArgs = {%+v}", appendEntriesArgs)
 
 		ok := false
 		done := make(chan bool)
@@ -558,12 +561,13 @@ func (rf *Raft) StartAgreement(command interface{}) (int, int, bool) {
 		rf.state = Follower
 		rf.votedFor = NullCandidate
 		log.Debug("Raft.sendHeartbeat", "raft server %d only got %d replies and is demoted to be a follower", rf.myIdx, nReplies)
+		return -1, -1, false
 	}
 
 	// If there exists an N such that N > commitIndex,
 	// a majority of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N
 	nPeers := len(rf.peers)
-	for n := rf.getLogLen(); n > rf.commitIndex; n-- {
+	for n := rf.getLogLen() - 1; n > rf.commitIndex; n-- {
 		nMatch := 0
 		for i := 0; i < nPeers; i++ {
 			if i == rf.myIdx {
