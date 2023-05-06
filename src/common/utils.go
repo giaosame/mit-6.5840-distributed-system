@@ -63,3 +63,10 @@ func ConvertFileToKVArray(filename string, mapFunc func(string, string) []KeyVal
 	}
 	return mapFunc(filename, string(content))
 }
+
+func Min(x, y int) int {
+	if x < y {
+		return x
+	}
+	return y
+}

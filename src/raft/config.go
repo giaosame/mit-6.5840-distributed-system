@@ -559,7 +559,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			}
 			cfg.mu.Unlock()
 			if rf != nil {
-				index1, _, isLeader := rf.Start(cmd)
+				index1, _, isLeader := rf.StartAgreement(cmd)
 				if isLeader {
 					index = index1
 					break

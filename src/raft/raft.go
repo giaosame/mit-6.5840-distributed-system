@@ -23,6 +23,7 @@ import (
 	"time"
 
 	//	"6.5840/labgob"
+	"6.5840/common"
 	"6.5840/labrpc"
 	"6.5840/log"
 )
@@ -55,16 +56,9 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
-type LogEntry struct {
-	Idx     int // index to identify its position in the log
-	Term    int
-	Command interface{}
-}
-
 // Raft implements a single Raft peer.
 type Raft struct {
 	mtx     sync.Mutex // lock to protect shared access to this peer's state
-	logMtx  sync.Mutex // lock to protect this Raft server's logs
 	respMtx sync.Mutex
 
 	peers       []*labrpc.ClientEnd // RPC end points of all peers
@@ -74,7 +68,7 @@ type Raft struct {
 	myRand      *rand.Rand          // the Raft's own random number generator
 	heartbeatCh chan struct{}       // a channel to receive heartbeat from the leader
 
-	// TODO: 2B, 2C. Look at the paper's Figure 2 for a description of what state a Raft server must maintain.
+	// TODO: 2C. Look at the paper's Figure 2 for a description of what state a Raft server must maintain.
 
 	// ========= persistent state on all servers =========
 	state       int        // current state of the server
@@ -104,7 +98,7 @@ func (rf *Raft) GetState() (int, bool) {
 // after you've implemented snapshots, pass the current snapshot
 // (or nil if there's not yet a snapshot).
 func (rf *Raft) persist() {
-	// Your code here (2C).
+	// TODO: Your code here (2C).
 	// Example:
 	// w := new(bytes.Buffer)
 	// e := labgob.NewEncoder(w)
@@ -119,7 +113,7 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
-	// Your code here (2C).
+	// TODO: Your code here (2C).
 	// Example:
 	// r := bytes.NewBuffer(data)
 	// d := labgob.NewDecoder(r)
@@ -139,7 +133,7 @@ func (rf *Raft) readPersist(data []byte) {
 // service no longer needs the log through (and including)
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (2D).
+	// TODO: Your code here (2D).
 
 }
 
@@ -177,6 +171,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 	if rf.moreUpToDate(args.LastLogTerm, args.LastLogIndex) {
+		// log.Debug("Raft.RequestVote", "lastLog={%+v}, args.LastLogTerm=%d, args.LastLogIndex=%d", *rf.getLastLogEntry(), args.LastLogTerm, args.LastLogIndex)
 		return
 	}
 
@@ -223,6 +218,27 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
+	prevLogIndex := args.PrevLogIndex
+	prevLogTerm := args.PrevLogTerm
+	if prevLogIndex >= rf.getLogLen() || rf.logs[prevLogIndex].Term != prevLogTerm {
+		return // reply false if log does not contain an entry at prevLogIndex whose term matches prevLogTerm
+	}
+
+	// if an existing entry conflicts with a new one (same index but different terms),
+	// delete the existing entry and all that follow it
+	if prevLogIndex+1 < rf.getLogLen() && prevLogTerm != rf.logs[prevLogIndex+1].Term {
+		rf.logs = rf.logs[:prevLogIndex+1]
+	}
+
+	// append any new entries not already in the log
+	rf.logs = append(rf.logs, args.Entries...)
+	if args.LeaderCommit > rf.commitIndex {
+		rf.commitIndex = common.Min(args.LeaderCommit, rf.getLogLen()-1)
+	}
+	if rf.commitIndex > rf.lastApplied {
+		rf.lastApplied++
+	}
+
 	rf.state = Follower
 	rf.votedFor = args.LeaderId
 	rf.currentTerm = leaderTerm
@@ -250,9 +266,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 // sendRequestVote sends a RequestVote RPC to a server.
 func (rf *Raft) sendRequestVote(wg *sync.WaitGroup, serverIdx int, nVotes *int, nConnected *int) {
 	defer wg.Done()
-	rf.logMtx.Lock()
-	lastLog := rf.logs[len(rf.logs)-1]
-	rf.logMtx.Unlock()
+	lastLog := rf.getLastLogEntry()
 
 	reqVoteArgs := RequestVoteArgs{
 		Term:         rf.currentTerm,
@@ -297,7 +311,7 @@ func (rf *Raft) sendRequestVote(wg *sync.WaitGroup, serverIdx int, nVotes *int, 
 	rf.mtx.Unlock()
 }
 
-func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int, nReplies *int, nConnected *int, appendEntries []LogEntry) {
+func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int, nReplies *int, nConnected *int, newEntry LogEntry) {
 	defer wg.Done()
 	rf.mtx.Lock()
 	prevLogIndex := rf.nextIndices[serverIdx]
@@ -306,12 +320,73 @@ func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int, nRepli
 		Term:         rf.currentTerm,
 		LeaderId:     rf.myIdx,
 		LeaderCommit: rf.commitIndex,
-		PrevLogIndex: prevLogIndex,
-		PrevLogTerm:  prevLogTerm,
-		Entries:      appendEntries,
+	}
+	// include all log entries from (prevLogIndex + 1, ... len(logs)-1)
+	appendEntries := rf.logs[rf.nextIndices[serverIdx]:]
+	rf.mtx.Unlock()
+
+	appendEntries = append(appendEntries, newEntry)
+	var appendEntriesReply AppendEntriesReply
+	for {
+		appendEntriesArgs.PrevLogIndex = prevLogIndex
+		appendEntriesArgs.PrevLogTerm = prevLogTerm
+		appendEntriesArgs.Entries = appendEntries
+		appendEntriesReply = AppendEntriesReply{}
+
+		ok := false
+		done := make(chan bool)
+		go func() {
+			ok = rf.peers[serverIdx].Call("Raft.AppendEntries", &appendEntriesArgs, &appendEntriesReply)
+			done <- true
+		}()
+
+		timeout := time.After(time.Duration(RespWaitingTimeoutMS) * time.Millisecond)
+		select {
+		case <-done:
+			break
+		case <-timeout:
+			return
+		}
+
+		if !ok { // no response received, this server is down
+			return
+		}
+		if appendEntriesReply.Term > rf.currentTerm {
+			rf.currentTerm = appendEntriesReply.Term
+			rf.votedFor = NullCandidate
+			rf.state = Follower
+			rf.respMtx.Lock()
+			*nConnected++
+			rf.respMtx.Unlock()
+			return
+		}
+		if appendEntriesReply.Success {
+			break
+		}
+
+		// else AppendEntries fails because of log inconsistency, decrement nextIndex and retry
+		prevLogIndex--
+		prevLogTerm = rf.logs[prevLogIndex].Term
+		addFirst(appendEntries, &rf.logs[prevLogIndex])
+	}
+
+	// update nextIndex and matchIndex for this follower
+	rf.nextIndices[serverIdx] = rf.getLogLen()
+	rf.matchIndices[serverIdx] = prevLogIndex + len(appendEntries)
+
+	rf.mtx.Lock()
+	*nConnected++
+	*nReplies++
+	rf.mtx.Unlock()
+}
+
+func (rf *Raft) sendHeartbeatAsync(wg *sync.WaitGroup, serverIdx int, nReplies *int, nConnected *int) {
+	defer wg.Done()
+	appendEntriesArgs := AppendEntriesArgs{
+		Term:     rf.currentTerm,
+		LeaderId: rf.myIdx,
 	}
 	appendEntriesReply := AppendEntriesReply{}
-	rf.mtx.Unlock()
 
 	ok := false
 	done := make(chan bool)
@@ -347,37 +422,6 @@ func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int, nRepli
 	rf.mtx.Unlock()
 }
 
-// Start is called by the service using Raft (e.g. a k/v server)
-// which wants to start agreement on the next command to be appended to Raft's log.
-//   - If this server isn't the leader, returns false.
-//   - Otherwise, start the agreement and return immediately.
-//
-// There is no guarantee that this command will ever be committed to the Raft log, since the leader
-// may fail or lose an election. Even if the Raft instance has been killed, this function should return gracefully.
-//
-// Return values:
-// * index:    the index that the command will appear at if it's ever committed
-// * term:     the current term
-// * isLeader: true if this server believes it is the leader
-func (rf *Raft) Start(command interface{}) (int, int, bool) { // TODO: rename it to StartAgreement?
-	if rf.state != Leader {
-		return -1, -1, false
-	}
-
-	// TODO: Your code here (2B).
-	rf.mtx.Lock()
-	index := len(rf.logs)
-	term := rf.currentTerm
-	entry := LogEntry{
-		Term:    term,
-		Idx:     index,
-		Command: command,
-	}
-	rf.logs = append(rf.logs, entry)
-	rf.mtx.Unlock()
-	return index, term, true
-}
-
 // the tester doesn't halt goroutines created by Raft after each test,
 // but it does call the Kill() method. your code can use killed() to
 // check whether Kill() has been called. the use of atomic avoids the
@@ -401,7 +445,7 @@ func (rf *Raft) heartbeat() {
 	for rf.killed() == false {
 		// check if a leader election should be started
 		if rf.state == Leader { // I'm the leader, send heartbeat to maintain their authority
-			rf.sendAppendEntries(nil)
+			rf.sendHeartbeat()
 			time.Sleep(time.Duration(HeartBeatIntervalMS) * time.Millisecond)
 			continue
 		}
@@ -439,14 +483,17 @@ func (rf *Raft) startElection() {
 	log.Debug("Raft.startElection", "raft server %d got %d votes", rf.myIdx, nVotes)
 	if nVotes > nConnected/2 && nVotes > 1 && rf.state == Candidate {
 		rf.state = Leader
+		for i := range rf.nextIndices {
+			rf.nextIndices[i] = rf.getLogLen()
+		}
 	} else {
 		rf.state = Follower
 		rf.votedFor = NullCandidate
 	}
 }
 
-func (rf *Raft) sendAppendEntries(appendEntries []LogEntry) {
-	log.Debug("Raft.sendAppendEntries", "raft server %d begins to send AppendEntries request...", rf.myIdx)
+func (rf *Raft) sendHeartbeat() {
+	log.Debug("Raft.sendHeartbeat", "raft server %d begins to send sendHeartbeat...", rf.myIdx)
 	var wg sync.WaitGroup
 	nReplies := 0
 	nConnected := 0
@@ -455,32 +502,84 @@ func (rf *Raft) sendAppendEntries(appendEntries []LogEntry) {
 			continue
 		}
 		wg.Add(1)
-		go rf.sendAppendEntriesAsync(&wg, i, &nReplies, &nConnected, appendEntries)
+		go rf.sendHeartbeatAsync(&wg, i, &nReplies, &nConnected)
 	}
 
 	wg.Wait()
 	if rf.state == Leader && nReplies <= nConnected/2 {
 		rf.state = Follower
 		rf.votedFor = NullCandidate
-		log.Debug("Raft.sendAppendEntries", "raft server %d only got %d replies and is demoted to be a follower", rf.myIdx, nReplies)
+		log.Debug("Raft.sendHeartbeat", "raft server %d only got %d replies and is demoted to be a follower", rf.myIdx, nReplies)
 	}
 }
 
-// moreUpToDate returns true if the last log of the current raft server rf is more up-to-date
-func (rf *Raft) moreUpToDate(lastLogTerm, lastLogIndex int) bool {
-	lastLogEntry := rf.getLastLogEntry()
-	if lastLogEntry.Term != lastLogTerm {
-		return lastLogEntry.Term > lastLogTerm
-	}
-	return lastLogEntry.Idx > lastLogIndex
-}
+// StartAgreement is called by the service using Raft (e.g. a k/v server)
+// which wants to start agreement on the next command to be appended to Raft's log.
+//   - If this server isn't the leader, returns false.
+//   - Otherwise, start the agreement and return immediately.
+//
+// There is no guarantee that this command will ever be committed to the Raft log, since the leader
+// may fail or lose an election. Even if the Raft instance has been killed, this function should return gracefully.
+//
+// Return values:
+// * index:    the index that the command will appear at if it's ever committed
+// * term:     the current term
+// * isLeader: true if this server believes it is the leader
+func (rf *Raft) StartAgreement(command interface{}) (int, int, bool) {
+	log.Debug("Raft.Start", "raft server %d begins to start agreement on the command {%v}...", rf.myIdx, command)
 
-// getLastLogEntry returns the last entry of logs
-func (rf *Raft) getLastLogEntry() *LogEntry {
-	rf.logMtx.Lock()
-	defer rf.logMtx.Unlock()
-	entry := &rf.logs[len(rf.logs)-1]
-	return entry
+	if rf.state != Leader {
+		return -1, -1, false
+	}
+
+	// TODO: Your code here (2B).
+	index := rf.getLogLen()
+	term := rf.currentTerm
+	entry := &LogEntry{
+		Idx:     index,
+		Term:    term,
+		Command: command,
+	}
+	rf.pushBack(entry)
+
+	var wg sync.WaitGroup
+	nReplies := 0
+	nConnected := 0
+	for i := range rf.peers {
+		if i == rf.myIdx {
+			continue
+		}
+		wg.Add(1)
+		go rf.sendAppendEntriesAsync(&wg, i, &nReplies, &nConnected, *entry)
+	}
+
+	wg.Wait()
+	if rf.state == Leader && nReplies <= nConnected/2 {
+		rf.state = Follower
+		rf.votedFor = NullCandidate
+		log.Debug("Raft.sendHeartbeat", "raft server %d only got %d replies and is demoted to be a follower", rf.myIdx, nReplies)
+	}
+
+	// If there exists an N such that N > commitIndex,
+	// a majority of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N
+	nPeers := len(rf.peers)
+	for n := rf.getLogLen(); n > rf.commitIndex; n-- {
+		nMatch := 0
+		for i := 0; i < nPeers; i++ {
+			if i == rf.myIdx {
+				continue
+			}
+			if rf.matchIndices[i] >= n {
+				nMatch++
+			}
+		}
+		if nMatch > nPeers/2 && rf.logs[n].Term == rf.currentTerm {
+			rf.commitIndex = n
+			break
+		}
+	}
+
+	return index, term, true
 }
 
 // MakeRaft creates a Raft server. The ports of all the Raft servers (including this one) are in peers[].
