@@ -173,10 +173,9 @@ func (cfg *config) applier(i int, applyCh chan ApplyMsg) {
 				errMsg = fmt.Sprintf("server %v apply out of order %v", i, m.CommandIndex)
 			}
 			if errMsg != "" {
-				log.Fatalf("apply error: %v", errMsg)
+				log.Printf("apply error: %v", errMsg)
 				cfg.applyErr[i] = errMsg
-				// keep reading after error so that Raft doesn't block
-				// holding locks...
+				// keep reading after error so that Raft doesn't block holding locks...
 			}
 		}
 	}
@@ -496,8 +495,7 @@ func (cfg *config) nCommitted(index int) (int, interface{}) {
 
 		if ok {
 			if count > 0 && cmd != cmd1 {
-				cfg.t.Fatalf("committed values do not match: index %v, %v, %v",
-					index, cmd, cmd1)
+				cfg.t.Fatalf("[config.nCommitted] committed values do not match: index %v, %v, %v", index, cmd, cmd1)
 			}
 			count += 1
 			cmd = cmd1
@@ -559,7 +557,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			}
 			cfg.mu.Unlock()
 			if rf != nil {
-				index1, _, isLeader := rf.Start(cmd)
+				index1, _, isLeader := rf.StartAgreement(cmd)
 				if isLeader {
 					index = index1
 					break
