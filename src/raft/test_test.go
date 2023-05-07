@@ -121,8 +121,8 @@ func TestManyElections2A(t *testing.T) {
 }
 
 func TestBasicAgree2B(t *testing.T) {
-	servers := 3
-	cfg := makeConfig(t, servers, false, false)
+	nServers := 3
+	cfg := makeConfig(t, nServers, false, false)
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2B): basic agreement")
@@ -135,7 +135,7 @@ func TestBasicAgree2B(t *testing.T) {
 			t.Fatalf("some have committed before Start()")
 		}
 
-		index := cfg.one(idx*100, servers, false)
+		index := cfg.one(idx*100, nServers, false)
 		if index != idx {
 			t.Fatalf("got index %v but expected %v", index, idx)
 		}

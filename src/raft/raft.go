@@ -6,14 +6,13 @@ package raft
 //
 // rf = MakeRaft(...)
 //   create a new Raft server.
-// rf.Start(command interface{}) (index, term, isleader)
+// rf.Start(command interface{}) (index, term, isLeader)
 //   start agreement on a new log entry
 // rf.GetState() (term, isLeader)
 //   ask a Raft for its current term, and whether it thinks it is leader
 // ApplyMsg
 //   each time a new entry is committed to the log, each Raft peer
-//   should send an ApplyMsg to the service (or tester)
-//   in the same server.
+//   should send an ApplyMsg to the service (or tester) in the same server.
 //
 
 import (
@@ -35,15 +34,12 @@ const (
 	Leader
 )
 
-// as each Raft peer becomes aware that successive log entries are
-// committed, the peer should send an ApplyMsg to the service (or
-// tester) on the same server, via the applyCh passed to Make(). set
-// CommandValid to true to indicate that the ApplyMsg contains a newly
-// committed log entry.
+// ApplyMsg will be sent by each Raft peer to the service (or tester) on the same server,
+// when the peer becomes aware that successive log entries are committed, via the applyCh passed to Make().
+// Set CommandValid to true to indicate that the ApplyMsg contains a newly committed log entry.
 //
-// in part 2D you'll want to send other kinds of messages (e.g.,
-// snapshots) on the applyCh, but set CommandValid to false for these
-// other uses.
+// in part 2D you'll want to send other kinds of messages (e.g., snapshots) on the applyCh,
+// but set CommandValid to false for these other uses.
 type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
@@ -66,6 +62,7 @@ type Raft struct {
 	myIdx       int                 // this peer's index into peers[]
 	dead        int32               // set by Kill()
 	myRand      *rand.Rand          // the Raft's own random number generator
+	applyCh     chan ApplyMsg       // a channel to send ApplyMsg to the service (or tester)
 	heartbeatCh chan struct{}       // a channel to receive heartbeat from the leader
 
 	// TODO: 2C. Look at the paper's Figure 2 for a description of what state a Raft server must maintain.
@@ -218,26 +215,31 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	prevLogIndex := args.PrevLogIndex
-	prevLogTerm := args.PrevLogTerm
-	if rf.logs[prevLogIndex].Term != prevLogTerm {
-		//log.Debug("Raft.AppendEntries", "rf.logs[prevLogIndex].Term = %d, prevLogTerm = %d", rf.logs[prevLogIndex].Term, prevLogTerm)
-		return // reply false if log does not contain an entry at prevLogIndex whose term matches prevLogTerm
+	// append entries
+	if len(args.Entries) > 0 {
+		prevLogIndex := args.PrevLogIndex
+		prevLogTerm := args.PrevLogTerm
+		if rf.logs[prevLogIndex].Term != prevLogTerm {
+			return // reply false if log does not contain an entry at prevLogIndex whose term matches prevLogTerm
+		}
+
+		// if an existing entry conflicts with a new one (same index but different terms),
+		// delete the existing entry and all that follow it
+		if prevLogIndex+1 < rf.getLogLen() && prevLogTerm != rf.logs[prevLogIndex+1].Term {
+			rf.logs = rf.logs[:prevLogIndex+1]
+		}
+
+		// append any new entries not already in the log
+		rf.logs = append(rf.logs, args.Entries...)
 	}
 
-	// if an existing entry conflicts with a new one (same index but different terms),
-	// delete the existing entry and all that follow it
-	if prevLogIndex+1 < rf.getLogLen() && prevLogTerm != rf.logs[prevLogIndex+1].Term {
-		rf.logs = rf.logs[:prevLogIndex+1]
-	}
-
-	// append any new entries not already in the log
-	rf.logs = append(rf.logs, args.Entries...)
 	if args.LeaderCommit > rf.commitIndex {
 		rf.commitIndex = common.Min(args.LeaderCommit, rf.getLogLen()-1)
 	}
 	if rf.commitIndex > rf.lastApplied {
+		log.Debug("Raft.AppendEntries", "rf.commitIndex > rf.lastApplied for the raft server %d", rf.myIdx)
 		rf.lastApplied++
+		go rf.sendApplyMsg(&rf.logs[rf.lastApplied])
 	}
 
 	rf.state = Follower
@@ -327,7 +329,6 @@ func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int, nRepli
 	appendEntries := rf.logs[rf.nextIndices[serverIdx]:]
 	rf.mtx.Unlock()
 
-	appendEntries = append(appendEntries, newEntry)
 	var appendEntriesReply AppendEntriesReply
 	for {
 		appendEntriesArgs.PrevLogIndex = prevLogIndex
@@ -355,6 +356,7 @@ func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int, nRepli
 			return
 		}
 		if appendEntriesReply.Term > rf.currentTerm {
+			log.Debug("Raft.AppendEntries", "appendEntriesReply.Term > rf.currentTerm")
 			rf.currentTerm = appendEntriesReply.Term
 			rf.votedFor = NullCandidate
 			rf.state = Follower
@@ -373,6 +375,8 @@ func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int, nRepli
 		addFirst(appendEntries, &rf.logs[prevLogIndex])
 	}
 
+	log.Debug("Raft.AppendEntries", "SUCCESS!")
+
 	// update nextIndex and matchIndex for this follower
 	rf.nextIndices[serverIdx] = rf.getLogLen()
 	rf.matchIndices[serverIdx] = prevLogIndex + len(appendEntries)
@@ -386,8 +390,9 @@ func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int, nRepli
 func (rf *Raft) sendHeartbeatAsync(wg *sync.WaitGroup, serverIdx int, nReplies *int, nConnected *int) {
 	defer wg.Done()
 	appendEntriesArgs := AppendEntriesArgs{
-		Term:     rf.currentTerm,
-		LeaderId: rf.myIdx,
+		Term:         rf.currentTerm,
+		LeaderId:     rf.myIdx,
+		LeaderCommit: rf.commitIndex,
 	}
 	appendEntriesReply := AppendEntriesReply{}
 
@@ -516,6 +521,14 @@ func (rf *Raft) sendHeartbeat() {
 	}
 }
 
+func (rf *Raft) sendApplyMsg(entry *LogEntry) {
+	rf.applyCh <- ApplyMsg{
+		CommandValid: true,
+		Command:      entry.Command,
+		CommandIndex: entry.Idx,
+	}
+}
+
 // StartAgreement is called by the service using Raft (e.g. a k/v server)
 // which wants to start agreement on the next command to be appended to Raft's log.
 //   - If this server isn't the leader, returns false.
@@ -529,7 +542,7 @@ func (rf *Raft) sendHeartbeat() {
 // * term:     the current term
 // * isLeader: true if this server believes it is the leader
 func (rf *Raft) StartAgreement(command interface{}) (int, int, bool) {
-	log.Debug("Raft.Start", "raft server %d begins to start agreement on the command {%v}...", rf.myIdx, command)
+	log.Debug("Raft.StartAgreement", "raft server %d begins to start agreement on the command {%v}...", rf.myIdx, command)
 
 	if rf.state != Leader {
 		return -1, -1, false
@@ -560,29 +573,30 @@ func (rf *Raft) StartAgreement(command interface{}) (int, int, bool) {
 	if rf.state == Leader && nReplies <= nConnected/2 {
 		rf.state = Follower
 		rf.votedFor = NullCandidate
-		log.Debug("Raft.sendHeartbeat", "raft server %d only got %d replies and is demoted to be a follower", rf.myIdx, nReplies)
+		log.Debug("Raft.StartAgreement", "raft server %d only got %d replies and is demoted to be a follower", rf.myIdx, nReplies)
 		return -1, -1, false
 	}
 
 	// If there exists an N such that N > commitIndex,
 	// a majority of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N
-	nPeers := len(rf.peers)
 	for n := rf.getLogLen() - 1; n > rf.commitIndex; n-- {
 		nMatch := 0
-		for i := 0; i < nPeers; i++ {
-			if i == rf.myIdx {
-				continue
-			}
+		for i := range rf.peers {
 			if rf.matchIndices[i] >= n {
 				nMatch++
 			}
 		}
-		if nMatch > nPeers/2 && rf.logs[n].Term == rf.currentTerm {
+		if nMatch > len(rf.peers)/2 && rf.logs[n].Term == rf.currentTerm {
 			rf.commitIndex = n
 			break
 		}
 	}
+	if rf.commitIndex > rf.lastApplied {
+		rf.lastApplied++
+		go rf.sendApplyMsg(&rf.logs[rf.lastApplied])
+	}
 
+	log.Debug("Raft.StartAgreement", "achieved agreement and the committed index is %d", rf.commitIndex)
 	return index, term, true
 }
 
@@ -597,9 +611,10 @@ func MakeRaft(peers []*labrpc.ClientEnd, myIdx int, persister *Persister, applyC
 	rf.persister = persister
 	rf.myIdx = myIdx
 
-	// TODO: Your initialization code here (2B, 2C).
+	// TODO: Your initialization code here (2C).
 	rf.state = Follower
 	rf.votedFor = NullCandidate
+	rf.applyCh = applyCh
 	rf.heartbeatCh = make(chan struct{})
 	rf.logs = []LogEntry{{}} // to make logs' first index 1
 	rf.nextIndices = make([]int, len(peers))
