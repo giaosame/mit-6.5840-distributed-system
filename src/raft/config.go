@@ -152,12 +152,12 @@ func (cfg *config) checkLogs(i int, m ApplyMsg) (string, bool) {
 				m.CommandIndex, i, m.Command, j, old)
 		}
 	}
-	_, prevok := cfg.logs[i][m.CommandIndex-1]
+	_, prevOk := cfg.logs[i][m.CommandIndex-1]
 	cfg.logs[i][m.CommandIndex] = v
 	if m.CommandIndex > cfg.maxIndex {
 		cfg.maxIndex = m.CommandIndex
 	}
-	return errMsg, prevok
+	return errMsg, prevOk
 }
 
 // applier reads message from apply ch and checks that they match the log contents
@@ -167,9 +167,9 @@ func (cfg *config) applier(i int, applyCh chan ApplyMsg) {
 			// ignore other types of ApplyMsg
 		} else {
 			cfg.mu.Lock()
-			errMsg, prevok := cfg.checkLogs(i, m)
+			errMsg, prevOk := cfg.checkLogs(i, m)
 			cfg.mu.Unlock()
-			if m.CommandIndex > 1 && prevok == false {
+			if m.CommandIndex > 1 && prevOk == false {
 				errMsg = fmt.Sprintf("server %v apply out of order %v", i, m.CommandIndex)
 			}
 			if errMsg != "" {
@@ -232,10 +232,10 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 
 			if errMsg == "" {
 				cfg.mu.Lock()
-				var prevok bool
-				errMsg, prevok = cfg.checkLogs(i, m)
+				var prevOk bool
+				errMsg, prevOk = cfg.checkLogs(i, m)
 				cfg.mu.Unlock()
-				if m.CommandIndex > 1 && prevok == false {
+				if m.CommandIndex > 1 && prevOk == false {
 					errMsg = fmt.Sprintf("server %v apply out of order %v", i, m.CommandIndex)
 				}
 			}
@@ -543,8 +543,11 @@ func (cfg *config) wait(index int, n int, startTerm int) interface{} {
 // If retry == true, may submit the command multiple times, in case a leader fails just after Start().
 // If retry == false, calls Start() only once, in order to simplify the early Lab 2B tests.
 func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
+	mylog.Debug("config.one", "begin to do a complete agreement on the command {%+v}", cmd)
 	t0 := time.Now()
 	startIdx := 0
+
+	// big loop may try to start an agreement several times
 	for time.Since(t0).Seconds() < 10 && cfg.checkFinished() == false {
 		// try all the servers, maybe one is the leader.
 		index := -1
@@ -557,6 +560,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			}
 			cfg.mu.Unlock()
 			if rf != nil {
+				mylog.Debug("config.one", "before calling StartAgreement()")
 				index1, _, isLeader := rf.StartAgreement(cmd)
 				if isLeader {
 					index = index1
@@ -564,6 +568,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 				}
 			}
 		}
+		mylog.Debug("config.one", "the index is going to be committed: %d", index)
 
 		if index != -1 {
 			// somebody claimed to be the leader and to have
@@ -571,6 +576,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			t1 := time.Now()
 			for time.Since(t1).Seconds() < 2 {
 				nd, cmd1 := cfg.nCommitted(index)
+				mylog.Debug("config.one", "nd = %d, cmd1 = %+v", nd, cmd)
 				if nd > 0 && nd >= expectedServers {
 					// committed
 					if cmd1 == cmd {

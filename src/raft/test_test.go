@@ -184,15 +184,13 @@ func TestFollowerFailure2B(t *testing.T) {
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2B): test progressive failure of followers")
-
 	cfg.one(101, servers, false)
 
 	// disconnect one follower from the network.
 	leader1 := cfg.checkOneLeader()
 	cfg.disconnect((leader1 + 1) % servers)
 
-	// the leader and remaining follower should be
-	// able to agree despite the disconnected follower.
+	// the leader and remaining follower should be able to agree despite the disconnected follower.
 	cfg.one(102, servers-1, false)
 	time.Sleep(RaftElectionTimeout)
 	cfg.one(103, servers-1, false)
@@ -210,7 +208,6 @@ func TestFollowerFailure2B(t *testing.T) {
 	if index != 4 {
 		t.Fatalf("expected index 4, got %v", index)
 	}
-
 	time.Sleep(2 * RaftElectionTimeout)
 
 	// check that command 104 did not commit.
@@ -218,7 +215,6 @@ func TestFollowerFailure2B(t *testing.T) {
 	if n > 0 {
 		t.Fatalf("%v committed but no majority", n)
 	}
-
 	cfg.end()
 }
 
@@ -229,7 +225,6 @@ func TestLeaderFailure2B(t *testing.T) {
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2B): test failure of leaders")
-
 	cfg.one(101, servers, false)
 
 	// disconnect the first leader.
@@ -250,7 +245,6 @@ func TestLeaderFailure2B(t *testing.T) {
 	for i := 0; i < servers; i++ {
 		cfg.rafts[i].StartAgreement(104)
 	}
-
 	time.Sleep(2 * RaftElectionTimeout)
 
 	// check that command 104 did not commit.
@@ -262,19 +256,17 @@ func TestLeaderFailure2B(t *testing.T) {
 	cfg.end()
 }
 
-// test that a follower participates after
-// disconnect and re-connect.
+// test that a follower participates after being disconnected and reconnected.
 func TestFailAgree2B(t *testing.T) {
 	servers := 3
 	cfg := makeConfig(t, servers, false, false)
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2B): agreement after follower reconnects")
-
 	cfg.one(101, servers, false)
+	leader := cfg.checkOneLeader()
 
 	// disconnect one follower from the network.
-	leader := cfg.checkOneLeader()
 	cfg.disconnect((leader + 1) % servers)
 
 	// the leader and remaining follower should be
@@ -285,13 +277,16 @@ func TestFailAgree2B(t *testing.T) {
 	cfg.one(104, servers-1, false)
 	cfg.one(105, servers-1, false)
 
-	// re-connect
+	log.Println("============================== 1 ==============================")
+
+	// reconnect
 	cfg.connect((leader + 1) % servers)
 
 	// the full set of servers should preserve
 	// previous agreements, and be able to agree
 	// on new commands.
 	cfg.one(106, servers, true)
+	log.Println("============================== 2 ==============================")
 	time.Sleep(RaftElectionTimeout)
 	cfg.one(107, servers, true)
 

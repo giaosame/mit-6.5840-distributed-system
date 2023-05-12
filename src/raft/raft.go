@@ -206,7 +206,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	defer func() {
 		rf.mtx.Unlock()
 		if heartbeat {
-			log.Debug("Raft.AppendEntries", "raft server %d received heartbeat from the leader %d", rf.myIdx, args.LeaderId)
+			log.Debug("Raft.AppendEntries", "raft server %d received heartbeat={%+v}", rf.myIdx, *args)
 			rf.heartbeatCh <- struct{}{}
 		}
 	}()
@@ -222,7 +222,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	if len(args.Entries) > 0 {
 		prevLogIndex := args.PrevLogIndex
 		prevLogTerm := args.PrevLogTerm
-		if rf.logs[prevLogIndex].Term != prevLogTerm {
+		if prevLogIndex >= rf.getLogLen() || rf.logs[prevLogIndex].Term != prevLogTerm {
 			return // reply false if log does not contain an entry at prevLogIndex whose term matches prevLogTerm
 		}
 
@@ -232,11 +232,13 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 			rf.logs = rf.logs[:prevLogIndex+1]
 		}
 
-		// append any new entries not already in the log
+		// append any new entries to the logs
 		rf.logs = append(rf.logs, args.Entries...)
+		// log.Debug("Raft.AppendEntries", "len(rf.logs) = %d", len(rf.logs))
 	}
 
 	if args.LeaderCommit > rf.commitIndex {
+		log.Debug("Raft.AppendEntries", "args.LeaderCommit{%d} > rf.commitIndex{%d} for the raft server %d", args.LeaderCommit, rf.commitIndex, rf.myIdx)
 		rf.commitIndex = common.Min(args.LeaderCommit, rf.getLogLen()-1)
 	}
 	if rf.commitIndex > rf.lastApplied {
@@ -316,7 +318,7 @@ func (rf *Raft) sendRequestVote(wg *sync.WaitGroup, serverIdx int, nVotes *int) 
 	rf.mtx.Unlock()
 }
 
-func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int, nReplies *int, nConnected *int, newEntry LogEntry) {
+func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int, nConnected *int) {
 	defer wg.Done()
 	rf.mtx.Lock()
 	prevLogIndex := rf.nextIndices[serverIdx] - 1
@@ -336,7 +338,7 @@ func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int, nRepli
 		appendEntriesArgs.PrevLogTerm = prevLogTerm
 		appendEntriesArgs.Entries = appendEntries
 		appendEntriesReply = AppendEntriesReply{}
-		log.Debug("Raft.AppendEntries", "appendEntriesArgs = {%+v}", appendEntriesArgs)
+		log.Debug("Raft.sendAppendEntriesAsync", "appendEntriesArgs = {%+v}", appendEntriesArgs)
 
 		ok := false
 		done := make(chan bool)
@@ -350,6 +352,7 @@ func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int, nRepli
 		case <-done:
 			break
 		case <-timeout:
+			log.Debug("Raft.sendAppendEntriesAsync", "the raft server %d is down", serverIdx)
 			return
 		}
 
@@ -357,7 +360,7 @@ func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int, nRepli
 			return
 		}
 		if appendEntriesReply.Term > rf.currentTerm {
-			log.Debug("Raft.AppendEntries", "appendEntriesReply.Term > rf.currentTerm")
+			log.Debug("Raft.sendAppendEntriesAsync", "the leader is demoted because it's term < the term of the raft server %d", serverIdx)
 			rf.currentTerm = appendEntriesReply.Term
 			rf.votedFor = NullCandidate
 			rf.state = Follower
@@ -376,15 +379,12 @@ func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int, nRepli
 		addFirst(appendEntries, &rf.logs[prevLogIndex])
 	}
 
-	log.Debug("Raft.AppendEntries", "SUCCESS!")
-
 	// update nextIndex and matchIndex for this follower
 	rf.nextIndices[serverIdx] = rf.getLogLen()
 	rf.matchIndices[serverIdx] = prevLogIndex + len(appendEntries)
 
 	rf.mtx.Lock()
 	*nConnected++
-	*nReplies++
 	rf.mtx.Unlock()
 }
 
@@ -534,13 +534,12 @@ func (rf *Raft) sendApplyMsg(entry *LogEntry) {
 // * term:     the current term
 // * isLeader: true if this server believes it is the leader
 func (rf *Raft) StartAgreement(command interface{}) (int, int, bool) {
-	log.Debug("Raft.StartAgreement", "raft server %d begins to start agreement on the command {%v}...", rf.myIdx, command)
-
 	if rf.state != Leader {
 		return -1, -1, false
 	}
 
 	// TODO: Your code here (2B).
+	log.Debug("Raft.StartAgreement", "raft server %d begins to start agreement on the command {%v}...", rf.myIdx, command)
 	index := rf.getLogLen()
 	term := rf.currentTerm
 	entry := &LogEntry{
@@ -549,36 +548,33 @@ func (rf *Raft) StartAgreement(command interface{}) (int, int, bool) {
 		Command: command,
 	}
 	rf.pushBack(entry)
+	rf.nextIndices[rf.myIdx] = rf.getLogLen()
+	rf.matchIndices[rf.myIdx] = rf.getLogLen() - 1
 
 	var wg sync.WaitGroup
-	nReplies := 0
-	nConnected := 0
+	nConnected := 1
 	for i := range rf.peers {
 		if i == rf.myIdx {
 			continue
 		}
 		wg.Add(1)
-		go rf.sendAppendEntriesAsync(&wg, i, &nReplies, &nConnected, *entry)
+		go rf.sendAppendEntriesAsync(&wg, i, &nConnected)
 	}
-
 	wg.Wait()
-	if rf.state == Leader && nReplies <= nConnected/2 {
-		rf.state = Follower
-		rf.votedFor = NullCandidate
-		log.Debug("Raft.StartAgreement", "raft server %d only got %d replies and is demoted to be a follower", rf.myIdx, nReplies)
-		return -1, -1, false
-	}
 
 	// If there exists an N such that N > commitIndex,
 	// a majority of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N
 	for n := rf.getLogLen() - 1; n > rf.commitIndex; n-- {
 		nMatch := 0
 		for i := range rf.peers {
+			log.Debug("Raft.StartAgreement", "rf.matchIndices[%d] = %d", i, rf.matchIndices[i])
 			if rf.matchIndices[i] >= n {
 				nMatch++
 			}
 		}
-		if nMatch > len(rf.peers)/2 && rf.logs[n].Term == rf.currentTerm {
+		log.Debug("Raft.StartAgreement", "nMatch = %d, N = %d", nMatch, n)
+		if nConnected > 1 && nMatch > nConnected/2 && rf.logs[n].Term == rf.currentTerm {
+			log.Debug("Raft.StartAgreement", "achieved agreement and the committed index is %d", n)
 			rf.commitIndex = n
 			break
 		}
@@ -588,7 +584,6 @@ func (rf *Raft) StartAgreement(command interface{}) (int, int, bool) {
 		go rf.sendApplyMsg(&rf.logs[rf.lastApplied])
 	}
 
-	log.Debug("Raft.StartAgreement", "achieved agreement and the committed index is %d", rf.commitIndex)
 	return index, term, true
 }
 
