@@ -32,7 +32,7 @@ const (
 	HeartBeatIntervalMS         = 100
 	RespWaitingTimeoutMS        = 125
 	ElectionTimeoutLowerBound   = 300
-	ElectionTimeoutUpBoundRange = 500
+	ElectionTimeoutUpBoundRange = 300
 )
 
 // Raft state
@@ -65,9 +65,7 @@ type ApplyMsg struct {
 
 // Raft implements a single Raft peer.
 type Raft struct {
-	mtx     sync.Mutex // Lock to protect shared access to this peer's state
-	respMtx sync.Mutex
-
+	mtx         sync.Mutex          // Lock to protect shared access to this peer's state
 	peers       []*labrpc.ClientEnd // RPC end points of all peers
 	persister   *Persister          // Object to hold this peer's persisted state
 	myIdx       int                 // this peer's index into peers[]
@@ -160,8 +158,9 @@ type RequestVoteReply struct {
 
 // RequestVote is invoked by candidates to gather votes
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	log.Debug("Raft.RequestVote", "raft server %d received RequestVote from the candidate %d: args.Term=%d, rf.currentTerm=%d", rf.myIdx, args.CandidateId, args.Term, rf.currentTerm)
 	heartbeat := false
-	rf.mtx.Lock()
+
 	defer func() {
 		rf.mtx.Unlock()
 		if heartbeat {
@@ -169,24 +168,26 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		}
 	}()
 
-	// TODO: Your code here (2B).
-	if args.Term == rf.currentTerm {
-		return
-	}
+	rf.mtx.Lock()
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		return
 	}
-
-	rf.currentTerm = args.Term
-	if rf.votedFor == NullCandidate || rf.votedFor == args.CandidateId || rf.state == Leader {
-		log.Debug("Raft.RequestVote", "raft server %d voted for %d previously, votes for the candidate %d", rf.myIdx, rf.votedFor, args.CandidateId)
-		rf.state = Follower
-		rf.votedFor = args.CandidateId
-		reply.Term = args.Term
-		reply.VoteGranted = true
-		heartbeat = true
+	if args.Term == rf.currentTerm && (rf.votedFor != NullCandidate && rf.votedFor != args.CandidateId) {
+		log.Debug("Raft.RequestVote", "raft server %d has voted for %d in the term %d", rf.myIdx, rf.votedFor, rf.currentTerm)
+		return
 	}
+
+	// grant the vote if:
+	// 1. args.Term == rf.currentTerm && rf.votedFor == NullCandidate (not voted yet)
+	// 2. args.Term > rf.currentTerm
+	rf.currentTerm = args.Term
+	log.Debug("Raft.RequestVote", "raft server %d voted for %d previously, votes for the candidate %d", rf.myIdx, rf.votedFor, args.CandidateId)
+	rf.state = Follower
+	rf.votedFor = args.CandidateId
+	reply.Term = args.Term
+	reply.VoteGranted = true
+	heartbeat = true
 }
 
 type AppendEntriesArgs struct {
@@ -247,7 +248,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 //
 // sendRequestVote sends a RequestVote RPC to a server.
 // serverIdx is the index of the target server in rf.peers[].
-func (rf *Raft) sendRequestVote(wg *sync.WaitGroup, serverIdx int, nVotes *int, nConnected *int) {
+func (rf *Raft) sendRequestVote(wg *sync.WaitGroup, serverIdx int, nVotes *int) {
 	defer wg.Done()
 	reqVoteArgs := RequestVoteArgs{
 		Term:        rf.currentTerm,
@@ -276,14 +277,11 @@ func (rf *Raft) sendRequestVote(wg *sync.WaitGroup, serverIdx int, nVotes *int, 
 		return
 	}
 
-	rf.respMtx.Lock()
-	*nConnected++
-	rf.respMtx.Unlock()
-
 	rf.mtx.Lock()
 	if reqVoteReply.Term > rf.currentTerm {
 		rf.currentTerm = reqVoteReply.Term
 		rf.state = Follower
+		rf.votedFor = NullCandidate
 	}
 	if reqVoteReply.VoteGranted && rf.state == Candidate {
 		*nVotes++
@@ -291,7 +289,7 @@ func (rf *Raft) sendRequestVote(wg *sync.WaitGroup, serverIdx int, nVotes *int, 
 	rf.mtx.Unlock()
 }
 
-func (rf *Raft) sendAppendEntries(wg *sync.WaitGroup, serverIdx int, nReplies *int, nConnected *int) {
+func (rf *Raft) sendAppendEntries(wg *sync.WaitGroup, serverIdx int) {
 	defer wg.Done()
 	appendEntriesArgs := AppendEntriesArgs{
 		Term:     rf.currentTerm,
@@ -318,17 +316,12 @@ func (rf *Raft) sendAppendEntries(wg *sync.WaitGroup, serverIdx int, nReplies *i
 		return
 	}
 
-	rf.respMtx.Lock()
-	*nConnected++
-	rf.respMtx.Unlock()
-
 	rf.mtx.Lock()
 	if appendEntriesReply.Term > rf.currentTerm {
+		log.Debug("sendAppendEntries", "the leader %d is demoted because appendEntriesReply.Term > rf.currentTerm", rf.myIdx)
 		rf.currentTerm = appendEntriesReply.Term
 		rf.votedFor = NullCandidate
 		rf.state = Follower
-	} else {
-		*nReplies++
 	}
 	rf.mtx.Unlock()
 }
@@ -384,7 +377,8 @@ func (rf *Raft) heartbeat() {
 		}
 
 		// I ain't the leader, pause for a random amount of time between 50 and 350 milliseconds.
-		ms := ElectionTimeoutLowerBound + (rf.myRand.Int63() % ElectionTimeoutUpBoundRange)
+		ms := ElectionTimeoutLowerBound + (rand.Int63() % ElectionTimeoutUpBoundRange)
+		//log.Debug("Raft.heartbeat", "raft server %d has ms = %d", rf.myIdx, ms)
 		electionTimeout := time.After(time.Duration(ms) * time.Millisecond)
 		select {
 		case <-electionTimeout:
@@ -396,51 +390,46 @@ func (rf *Raft) heartbeat() {
 }
 
 func (rf *Raft) startElection() {
-	log.Debug("Raft.startElection", "raft server %d starts the election!", rf.myIdx)
 	var wg sync.WaitGroup
+	rf.mtx.Lock()
 	rf.state = Candidate
 	rf.votedFor = rf.myIdx
 	rf.currentTerm++
+	rf.mtx.Unlock()
+	log.Debug("Raft.startElection", "raft server %d starts the election!", rf.myIdx)
 
-	nVotes := 1     // number of received votes
-	nConnected := 1 // number of connected raft servers
+	nVotes := 1 // number of received votes
 	for i := range rf.peers {
 		if i == rf.myIdx {
 			continue
 		}
 		wg.Add(1)
-		go rf.sendRequestVote(&wg, i, &nVotes, &nConnected)
+		go rf.sendRequestVote(&wg, i, &nVotes)
 	}
 
 	wg.Wait()
 	log.Debug("Raft.startElection", "raft server %d got %d votes", rf.myIdx, nVotes)
-	if nVotes > nConnected/2 && nVotes > 1 && rf.state == Candidate {
+	rf.mtx.Lock()
+	if nVotes > len(rf.peers)/2 && rf.state == Candidate {
 		rf.state = Leader
 	} else {
 		rf.state = Follower
 		rf.votedFor = NullCandidate
 	}
+	rf.mtx.Unlock()
 }
 
 func (rf *Raft) sendHeartBeat() {
 	log.Debug("Raft.sendHeartBeat", "raft server %d begins to send heartbeat...", rf.myIdx)
 	var wg sync.WaitGroup
-	nReplies := 0
-	nConnected := 0
 	for i := range rf.peers {
 		if i == rf.myIdx {
 			continue
 		}
 		wg.Add(1)
-		go rf.sendAppendEntries(&wg, i, &nReplies, &nConnected)
+		go rf.sendAppendEntries(&wg, i)
 	}
-
 	wg.Wait()
-	if rf.state == Leader && nReplies <= nConnected/2 {
-		rf.state = Follower
-		rf.votedFor = NullCandidate
-		log.Debug("Raft.sendHeartBeat", "raft server %d only got %d replies and is demoted to be a follower", rf.myIdx, nReplies)
-	}
 }
 
 // MakeRaft creates a Raft server. The ports of all the Raft servers (including this one) are in peers[].
@@ -463,7 +452,7 @@ func MakeRaft(peers []*labrpc.ClientEnd, myIdx int, persister *Persister, applyC
 	rf.readPersist(persister.ReadRaftState())
 
 	// set up the random generator
-	seed := time.Now().UnixNano() + int64(myIdx)
+	seed := int64(myIdx)
 	rf.myRand = rand.New(rand.NewSource(seed))
 
 	// start heartbeat goroutine to start elections
