@@ -97,8 +97,8 @@ func TestManyElections2A(t *testing.T) {
 	cfg.checkOneLeader()
 
 	iters := 100
-	for ii := 1; ii < iters; ii++ {
-		log.Printf("[TestManyElections2A] ========= iter {%d} =========", ii)
+	for idx := 1; idx < iters; idx++ {
+		log.Printf("[TestManyElections2A] ========= iter {%d} =========", idx)
 		// disconnect three nodes
 		i1 := rand.Int() % nServers
 		i2 := rand.Int() % nServers
@@ -121,22 +121,23 @@ func TestManyElections2A(t *testing.T) {
 }
 
 func TestBasicAgree2B(t *testing.T) {
-	servers := 3
-	cfg := makeConfig(t, servers, false, false)
+	nServers := 3
+	cfg := makeConfig(t, nServers, false, false)
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2B): basic agreement")
 
 	iters := 3
-	for index := 1; index < iters+1; index++ {
-		nd, _ := cfg.nCommitted(index)
-		if nd > 0 {
+	for idx := 1; idx < iters+1; idx++ {
+		// num represents how many servers think a log entry is committed
+		num, _ := cfg.nCommitted(idx)
+		if num > 0 {
 			t.Fatalf("some have committed before Start()")
 		}
 
-		xindex := cfg.one(index*100, servers, false)
-		if xindex != index {
-			t.Fatalf("got index %v but expected %v", xindex, index)
+		index := cfg.one(idx*100, nServers, false)
+		if index != idx {
+			t.Fatalf("got index %v but expected %v", index, idx)
 		}
 	}
 
@@ -202,7 +203,7 @@ func TestFollowerFailure2B(t *testing.T) {
 	cfg.disconnect((leader2 + 2) % servers)
 
 	// submit a command.
-	index, _, ok := cfg.rafts[leader2].Start(104)
+	index, _, ok := cfg.rafts[leader2].StartAgreement(104)
 	if ok != true {
 		t.Fatalf("leader rejected Start()")
 	}
@@ -247,7 +248,7 @@ func TestLeaderFailure2B(t *testing.T) {
 
 	// submit a command to each server.
 	for i := 0; i < servers; i++ {
-		cfg.rafts[i].Start(104)
+		cfg.rafts[i].StartAgreement(104)
 	}
 
 	time.Sleep(2 * RaftElectionTimeout)
@@ -312,7 +313,7 @@ func TestFailNoAgree2B(t *testing.T) {
 	cfg.disconnect((leader + 2) % servers)
 	cfg.disconnect((leader + 3) % servers)
 
-	index, _, ok := cfg.rafts[leader].Start(20)
+	index, _, ok := cfg.rafts[leader].StartAgreement(20)
 	if ok != true {
 		t.Fatalf("leader rejected Start()")
 	}
@@ -335,7 +336,7 @@ func TestFailNoAgree2B(t *testing.T) {
 	// the disconnected majority may have chosen a leader from
 	// among their own ranks, forgetting index 2.
 	leader2 := cfg.checkOneLeader()
-	index2, _, ok2 := cfg.rafts[leader2].Start(30)
+	index2, _, ok2 := cfg.rafts[leader2].StartAgreement(30)
 	if ok2 == false {
 		t.Fatalf("leader2 rejected Start()")
 	}
@@ -364,7 +365,7 @@ loop:
 		}
 
 		leader := cfg.checkOneLeader()
-		_, term, ok := cfg.rafts[leader].Start(1)
+		_, term, ok := cfg.rafts[leader].StartAgreement(1)
 		if !ok {
 			// leader moved on really quickly
 			continue
@@ -377,7 +378,7 @@ loop:
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
-				i, term1, ok := cfg.rafts[leader].Start(100 + i)
+				i, term1, ok := cfg.rafts[leader].StartAgreement(100 + i)
 				if term1 != term {
 					return
 				}
@@ -463,9 +464,9 @@ func TestRejoin2B(t *testing.T) {
 	cfg.disconnect(leader1)
 
 	// make old leader try to agree on some entries
-	cfg.rafts[leader1].Start(102)
-	cfg.rafts[leader1].Start(103)
-	cfg.rafts[leader1].Start(104)
+	cfg.rafts[leader1].StartAgreement(102)
+	cfg.rafts[leader1].StartAgreement(103)
+	cfg.rafts[leader1].StartAgreement(104)
 
 	// new leader commits, also for index=2
 	cfg.one(103, 2, true)
@@ -504,7 +505,7 @@ func TestBackup2B(t *testing.T) {
 
 	// submit lots of commands that won't commit
 	for i := 0; i < 50; i++ {
-		cfg.rafts[leader1].Start(rand.Int())
+		cfg.rafts[leader1].StartAgreement(rand.Int())
 	}
 
 	time.Sleep(RaftElectionTimeout / 2)
@@ -532,7 +533,7 @@ func TestBackup2B(t *testing.T) {
 
 	// lots more commands that won't commit
 	for i := 0; i < 50; i++ {
-		cfg.rafts[leader2].Start(rand.Int())
+		cfg.rafts[leader2].StartAgreement(rand.Int())
 	}
 
 	time.Sleep(RaftElectionTimeout / 2)
@@ -594,7 +595,7 @@ loop:
 		total1 = rpcs()
 
 		iters := 10
-		starti, term, ok := cfg.rafts[leader].Start(1)
+		starti, term, ok := cfg.rafts[leader].StartAgreement(1)
 		if !ok {
 			// leader moved on really quickly
 			continue
@@ -603,7 +604,7 @@ loop:
 		for i := 1; i < iters+2; i++ {
 			x := int(rand.Int31())
 			cmds = append(cmds, x)
-			index1, term1, ok := cfg.rafts[leader].Start(x)
+			index1, term1, ok := cfg.rafts[leader].StartAgreement(x)
 			if term1 != term {
 				// Term changed while starting
 				continue loop
@@ -813,7 +814,7 @@ func TestFigure82C(t *testing.T) {
 		leader := -1
 		for i := 0; i < servers; i++ {
 			if cfg.rafts[i] != nil {
-				_, _, ok := cfg.rafts[i].Start(rand.Int())
+				_, _, ok := cfg.rafts[i].StartAgreement(rand.Int())
 				if ok {
 					leader = i
 				}
@@ -900,7 +901,7 @@ func TestFigure8Unreliable2C(t *testing.T) {
 		}
 		leader := -1
 		for i := 0; i < servers; i++ {
-			_, _, ok := cfg.rafts[i].Start(rand.Int() % 10000)
+			_, _, ok := cfg.rafts[i].StartAgreement(rand.Int() % 10000)
 			if ok && cfg.connected[i] {
 				leader = i
 			}
@@ -969,7 +970,7 @@ func internalChurn(t *testing.T, unreliable bool) {
 				rf := cfg.rafts[i]
 				cfg.mu.Unlock()
 				if rf != nil {
-					index1, _, ok1 := rf.Start(x)
+					index1, _, ok1 := rf.StartAgreement(x)
 					if ok1 {
 						ok = ok1
 						index = index1
@@ -1125,7 +1126,7 @@ func snapcommon(t *testing.T, name string, disconnect bool, reliable bool, crash
 		// perhaps send enough to get a snapshot
 		nn := (SnapShotInterval / 2) + (rand.Int() % SnapShotInterval)
 		for i := 0; i < nn; i++ {
-			cfg.rafts[sender].Start(rand.Int())
+			cfg.rafts[sender].StartAgreement(rand.Int())
 		}
 
 		// let applier threads catch up with the Start()'s

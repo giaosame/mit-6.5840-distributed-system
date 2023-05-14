@@ -36,13 +36,13 @@ func randString(n int) string {
 
 func makeSeed() int64 {
 	max := big.NewInt(int64(1) << 62)
-	bigx, _ := crand.Int(crand.Reader, max)
-	x := bigx.Int64()
+	bigX, _ := crand.Int(crand.Reader, max)
+	x := bigX.Int64()
 	return x
 }
 
 type config struct {
-	n         int
+	n         int // number of servers
 	rpcs0     int // rpcTotal() at start of test
 	cmds0     int // number of agreements
 	bytes0    int64
@@ -68,7 +68,7 @@ type config struct {
 
 var nCPUOnce sync.Once
 
-func makeConfig(t *testing.T, n int, unreliable bool, snapshot bool) *config {
+func makeConfig(t *testing.T, nServers int, unreliable bool, snapshot bool) *config {
 	nCPUOnce.Do(func() {
 		if runtime.NumCPU() < 2 {
 			fmt.Printf("warning: only one CPU, which may conceal locking bugs\n")
@@ -79,7 +79,7 @@ func makeConfig(t *testing.T, n int, unreliable bool, snapshot bool) *config {
 	cfg := &config{}
 	cfg.t = t
 	cfg.net = labrpc.MakeNetwork()
-	cfg.n = n
+	cfg.n = nServers
 	cfg.applyErr = make([]string, cfg.n)
 	cfg.rafts = make([]*Raft, cfg.n)
 	cfg.connected = make([]bool, cfg.n)
@@ -173,10 +173,9 @@ func (cfg *config) applier(i int, applyCh chan ApplyMsg) {
 				errMsg = fmt.Sprintf("server %v apply out of order %v", i, m.CommandIndex)
 			}
 			if errMsg != "" {
-				log.Fatalf("apply error: %v", errMsg)
+				log.Printf("apply error: %v", errMsg)
 				cfg.applyErr[i] = errMsg
-				// keep reading after error so that Raft doesn't block
-				// holding locks...
+				// keep reading after error so that Raft doesn't block holding locks...
 			}
 		}
 	}
@@ -496,8 +495,7 @@ func (cfg *config) nCommitted(index int) (int, interface{}) {
 
 		if ok {
 			if count > 0 && cmd != cmd1 {
-				cfg.t.Fatalf("committed values do not match: index %v, %v, %v",
-					index, cmd, cmd1)
+				cfg.t.Fatalf("[config.nCommitted] committed values do not match: index %v, %v, %v", index, cmd, cmd1)
 			}
 			count += 1
 			cmd = cmd1
@@ -536,35 +534,31 @@ func (cfg *config) wait(index int, n int, startTerm int) interface{} {
 	return cmd
 }
 
-// do a complete agreement.
-// it might choose the wrong leader initially,
-// and have to re-submit after giving up.
-// entirely gives up after about 10 seconds.
-// indirectly checks that the servers agree on the
-// same value, since nCommitted() checks this,
-// as do the threads that read from applyCh.
-// returns index.
-// if retry==true, may submit the command multiple
-// times, in case a leader fails just after Start().
-// if retry==false, calls Start() only once, in order
-// to simplify the early Lab 2B tests.
+// one does a complete agreement and return the index.
+//   - might choose the wrong leader initially, and have to re-submit after giving up.
+//   - entirely gives up after about 10 seconds.
+//   - indirectly checks that the servers agree on the same value, since nCommitted() checks this,
+//     as do the threads that read from applyCh.
+//
+// If retry == true, may submit the command multiple times, in case a leader fails just after Start().
+// If retry == false, calls Start() only once, in order to simplify the early Lab 2B tests.
 func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 	t0 := time.Now()
-	starts := 0
+	startIdx := 0
 	for time.Since(t0).Seconds() < 10 && cfg.checkFinished() == false {
 		// try all the servers, maybe one is the leader.
 		index := -1
-		for si := 0; si < cfg.n; si++ {
-			starts = (starts + 1) % cfg.n
+		for i := 0; i < cfg.n; i++ {
+			startIdx = (startIdx + 1) % cfg.n
 			var rf *Raft
 			cfg.mu.Lock()
-			if cfg.connected[starts] {
-				rf = cfg.rafts[starts]
+			if cfg.connected[startIdx] {
+				rf = cfg.rafts[startIdx]
 			}
 			cfg.mu.Unlock()
 			if rf != nil {
-				index1, _, ok := rf.Start(cmd)
-				if ok {
+				index1, _, isLeader := rf.StartAgreement(cmd)
+				if isLeader {
 					index = index1
 					break
 				}

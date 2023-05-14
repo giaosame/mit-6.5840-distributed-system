@@ -2,7 +2,7 @@ package log
 
 /*
  * Refer to https://blog.josejg.com/debugging-pretty/
- * e.g. VERBOSE=0 go test -run 2A to disable logging
+ * e.g. to disable logging: VERBOSE=0 go test -run 2A
  */
 
 import (
