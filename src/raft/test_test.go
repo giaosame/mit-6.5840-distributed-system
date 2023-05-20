@@ -277,16 +277,13 @@ func TestFailAgree2B(t *testing.T) {
 	cfg.one(104, servers-1, false)
 	cfg.one(105, servers-1, false)
 
-	log.Println("============================== 1 ==============================")
-
 	// reconnect
 	cfg.connect((leader + 1) % servers)
+	log.Println("================ after reconnecting ==================")
 
-	// the full set of servers should preserve
-	// previous agreements, and be able to agree
-	// on new commands.
+	// the full set of servers should preserve previous agreements,
+	// and be able to agree on new commands.
 	cfg.one(106, servers, true)
-	log.Println("============================== 2 ==============================")
 	time.Sleep(RaftElectionTimeout)
 	cfg.one(107, servers, true)
 
