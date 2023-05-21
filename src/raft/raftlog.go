@@ -6,12 +6,14 @@ type LogEntry struct {
 	Command interface{}
 }
 
+type LogEntries []LogEntry
+
 func (e *LogEntry) equals(entry *LogEntry) bool {
 	return e.Idx == entry.Idx && e.Term == entry.Term
 }
 
-func addFirst(es []LogEntry, e *LogEntry) {
-	es = append([]LogEntry{*e}, es...)
+func addFirst(es *[]LogEntry, e *LogEntry) {
+	*es = append([]LogEntry{*e}, *es...)
 }
 
 // moreUpToDate returns true if the last log of the current raft server rf is more up-to-date
@@ -34,7 +36,5 @@ func (rf *Raft) getLogLen() int {
 }
 
 func (rf *Raft) pushBack(e *LogEntry) {
-	rf.mtx.Lock()
-	defer rf.mtx.Unlock()
 	rf.logs = append(rf.logs, *e)
 }

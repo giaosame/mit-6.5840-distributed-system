@@ -10,12 +10,14 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"time"
 )
 
 var verbose int
 
 func init() {
 	verbose = 1
+	log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
 
 	verboseEnvStr := os.Getenv("VERBOSE")
 	if verboseEnvStr != "" {
@@ -33,6 +35,8 @@ func init() {
 
 func Debug(funcName string, format string, args ...interface{}) {
 	if verbose == 1 {
-		log.Printf(fmt.Sprintf("[%s] ", funcName)+format, args...)
+		t := time.Now().UnixMilli()
+		prefix := fmt.Sprintf("@%d [%s] ", t, funcName)
+		log.Printf(fmt.Sprintf(prefix+format, args...))
 	}
 }
