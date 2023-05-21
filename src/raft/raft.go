@@ -135,7 +135,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 }
 
 // RequestVoteArgs represents RequestVote RPC arguments structure
-type RequestVoteArgs struct { // TODO: 2B
+type RequestVoteArgs struct {
 	Term         int // candidate’s term
 	CandidateId  int // candidate requesting vote
 	LastLogIndex int // index of candidate’s last log entry
@@ -150,7 +150,7 @@ type RequestVoteReply struct {
 
 // RequestVote is invoked by candidates to gather votes
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	log.Debug("Raft.RequestVote", "raft server %d received RequestVote from the candidate %d: args.Term=%d, rf.currentTerm=%d", rf.myIdx, args.CandidateId, args.Term, rf.currentTerm)
+	// log.Debug("Raft.RequestVote", "raft server %d received RequestVote from the candidate %d: args.Term=%d, rf.currentTerm=%d", rf.myIdx, args.CandidateId, args.Term, rf.currentTerm)
 	heartbeat := false
 
 	defer func() {
@@ -177,8 +177,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// grant the vote if:
 	// 1. args.Term == rf.currentTerm && rf.votedFor == NullCandidate (not voted yet)
 	// 2. args.Term > rf.currentTerm
-	rf.currentTerm = args.Term
 	log.Debug("Raft.RequestVote", "raft server %d voted for %d previously, votes for the candidate %d", rf.myIdx, rf.votedFor, args.CandidateId)
+	rf.currentTerm = args.Term
 	rf.state = Follower
 	rf.votedFor = args.CandidateId
 	reply.Term = args.Term
@@ -204,7 +204,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	heartbeat := false
 	rf.mtx.Lock()
 	defer func() {
-		log.Debug("Raft.updateCommitIndex", "logs of raft server %d: %+v", rf.myIdx, rf.logs)
 		rf.mtx.Unlock()
 		if heartbeat {
 			log.Debug("Raft.AppendEntries", "raft server %d received heartbeat=%+v", rf.myIdx, *args)
@@ -228,9 +227,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// if an existing entry conflicts with a new one (same index but different terms),
 	// delete the existing entry and all that follow it
-	if prevLogIndex < rf.getLogLen()-1 {
-		log.Debug("Raft.AppendEntries", "removed different logs")
-		rf.logs = rf.logs[:prevLogIndex]
+	if prevLogIndex+1 < rf.getLogLen() {
+		// log.Debug("Raft.AppendEntries", "removed conflicted logs")
+		rf.logs = rf.logs[:prevLogIndex+1]
 	}
 
 	// append any new entries to the logs
@@ -331,14 +330,11 @@ func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int) {
 		Entries:      rf.logs[rf.nextIndices[serverIdx]:], // include all log entries from (prevLogIndex + 1, ... len(logs)-1)
 	}
 	rf.mtx.Unlock()
-	log.Debug("Raft.sendAppendEntriesAsync", "appendEntriesArgs = {%+v}", appendEntriesArgs)
+	// log.Debug("Raft.sendAppendEntriesAsync", "appendEntriesArgs = {%+v}", appendEntriesArgs)
 
 	var appendEntriesReply AppendEntriesReply
 	for {
 		appendEntriesReply = AppendEntriesReply{}
-
-		log.Debug("Raft.sendAppendEntriesAsync", "appendEntriesArgs.Entries = {%+v}", appendEntriesArgs.Entries)
-
 		ok := false
 		done := make(chan bool)
 		go func() {
@@ -359,8 +355,10 @@ func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int) {
 		}
 
 		rf.mtx.Lock()
-		if appendEntriesReply.Term > rf.currentTerm { // TODO: need to add a mutex
-			log.Debug("Raft.sendAppendEntriesAsync", "the leader %d is demoted because it's term is smaller than the term of the raft server %d", rf.myIdx, serverIdx)
+		if appendEntriesReply.Term > rf.currentTerm {
+			log.Debug("Raft.sendAppendEntriesAsync",
+				"the leader %d is demoted because it's term is smaller than the term of the raft server %d",
+				rf.myIdx, serverIdx)
 			rf.demote(appendEntriesReply.Term)
 			rf.mtx.Unlock()
 			return
@@ -379,7 +377,6 @@ func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int) {
 			return
 		}
 
-		log.Debug("Raft.sendAppendEntriesAsync", "leader %d, follower %d, reply = %+v, leader's term = %d", rf.myIdx, serverIdx, appendEntriesReply, rf.currentTerm)
 		prevLogTerm = rf.logs[prevLogIndex].Term
 		appendEntriesArgs.PrevLogIndex = prevLogIndex
 		appendEntriesArgs.PrevLogTerm = prevLogTerm
@@ -420,14 +417,13 @@ func (rf *Raft) updateCommitIndex() {
 	for n := rf.getLogLen() - 1; n > rf.commitIndex; n-- {
 		nMatch := 0
 		for i := range rf.peers {
-			log.Debug("Raft.updateCommitIndex", "rf.matchIndices[%d] = %d", i, rf.matchIndices[i])
 			if rf.matchIndices[i] >= n {
 				nMatch++
 			}
 		}
-		log.Debug("Raft.updateCommitIndex", "nMatch = %d, N = %d", nMatch, n)
+
 		if nMatch > len(rf.peers)/2 && rf.logs[n].Term == rf.currentTerm {
-			log.Debug("Raft.updateCommitIndex", "update commitIndex to %d", n)
+			log.Debug("Raft.updateCommitIndex", "leader updates its commitIndex to %d", n)
 			rf.commitIndex = n
 			break
 		}
@@ -518,7 +514,6 @@ func (rf *Raft) StartAgreement(command interface{}) (int, int, bool) {
 		return -1, -1, false
 	}
 
-	// TODO: Your code here (2B).
 	log.Debug("Raft.StartAgreement", "raft server %d begins to start agreement on the command {%v}...", rf.myIdx, command)
 	rf.mtx.Lock()
 	rf.logs = rf.logs[:rf.commitIndex+1] // remove those uncommitted logs first
