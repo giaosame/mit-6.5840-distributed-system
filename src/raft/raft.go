@@ -204,6 +204,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	heartbeat := false
 	rf.mtx.Lock()
 	defer func() {
+		log.Debug("Raft.updateCommitIndex", "logs of raft server %d: %+v", rf.myIdx, rf.logs)
 		rf.mtx.Unlock()
 		if heartbeat {
 			log.Debug("Raft.AppendEntries", "raft server %d received heartbeat=%+v", rf.myIdx, *args)
@@ -227,8 +228,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// if an existing entry conflicts with a new one (same index but different terms),
 	// delete the existing entry and all that follow it
-	if prevLogIndex+1 < rf.getLogLen() && prevLogTerm != rf.logs[prevLogIndex+1].Term {
-		rf.logs = rf.logs[:prevLogIndex+1]
+	if prevLogIndex < rf.getLogLen()-1 {
+		log.Debug("Raft.AppendEntries", "removed different logs")
+		rf.logs = rf.logs[:prevLogIndex]
 	}
 
 	// append any new entries to the logs
@@ -335,6 +337,8 @@ func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int) {
 	for {
 		appendEntriesReply = AppendEntriesReply{}
 
+		log.Debug("Raft.sendAppendEntriesAsync", "appendEntriesArgs.Entries = {%+v}", appendEntriesArgs.Entries)
+
 		ok := false
 		done := make(chan bool)
 		go func() {
@@ -368,6 +372,7 @@ func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int) {
 		}
 
 		// else AppendEntries fails because of log inconsistency, decrement nextIndex and retry
+		addFirst(&appendEntriesArgs.Entries, &rf.logs[prevLogIndex])
 		prevLogIndex--
 		if prevLogIndex < 0 {
 			// it should not be less than 0, if it is, then it means that the currentTerm is less than the reply.Term
@@ -378,7 +383,6 @@ func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int) {
 		prevLogTerm = rf.logs[prevLogIndex].Term
 		appendEntriesArgs.PrevLogIndex = prevLogIndex
 		appendEntriesArgs.PrevLogTerm = prevLogTerm
-		addFirst(&appendEntriesArgs.Entries, &rf.logs[prevLogIndex])
 	}
 
 	// update nextIndex and matchIndex for this follower

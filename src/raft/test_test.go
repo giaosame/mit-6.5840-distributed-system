@@ -279,7 +279,6 @@ func TestFailAgree2B(t *testing.T) {
 
 	// reconnect
 	cfg.connect((leader + 1) % servers)
-	log.Println("================ after reconnecting ==================")
 
 	// the full set of servers should preserve previous agreements,
 	// and be able to agree on new commands.
