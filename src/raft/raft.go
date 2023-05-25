@@ -431,6 +431,7 @@ func (rf *Raft) updateCommitIndex() {
 	rf.mtx.Unlock()
 
 	if rf.commitIndex > rf.lastApplied {
+		log.Debug("Raft.updateCommitIndex", "logs of leader: %+v", rf.logs)
 		rf.lastApplied++
 		go rf.sendApplyMsg(&rf.logs[rf.lastApplied])
 	}
@@ -459,7 +460,7 @@ func (rf *Raft) startElection() {
 	rf.mtx.Lock()
 	if nVotes > len(rf.peers)/2 && rf.state == Candidate {
 		rf.state = Leader
-		rf.logs = rf.logs[:rf.commitIndex+1]
+		rf.logs = rf.logs[:rf.commitIndex+1] // TODO: need to think twice about removing uncommitted log entries
 		for i := range rf.nextIndices {
 			rf.nextIndices[i] = rf.getLogLen()
 		}
@@ -510,14 +511,15 @@ func (rf *Raft) demote(newTerm int) {
 // * term:     the current term
 // * isLeader: true if this server believes it is the leader
 func (rf *Raft) StartAgreement(command interface{}) (int, int, bool) {
+	rf.mtx.Lock()
+	defer rf.mtx.Unlock()
+
 	if rf.state != Leader {
 		return -1, -1, false
 	}
-
 	log.Debug("Raft.StartAgreement", "raft server %d begins to start agreement on the command {%v}...", rf.myIdx, command)
-	rf.mtx.Lock()
-	rf.logs = rf.logs[:rf.commitIndex+1] // remove those uncommitted logs first
 
+	// add the new command into logs
 	index := rf.getLogLen()
 	term := rf.currentTerm
 	entry := &LogEntry{
@@ -526,7 +528,6 @@ func (rf *Raft) StartAgreement(command interface{}) (int, int, bool) {
 		Command: command,
 	}
 	rf.pushBack(entry)
-	rf.mtx.Unlock()
 
 	rf.nextIndices[rf.myIdx] = rf.getLogLen()
 	rf.matchIndices[rf.myIdx] = rf.getLogLen() - 1

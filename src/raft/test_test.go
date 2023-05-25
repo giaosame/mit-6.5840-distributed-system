@@ -258,33 +258,34 @@ func TestLeaderFailure2B(t *testing.T) {
 
 // test that a follower participates after being disconnected and reconnected.
 func TestFailAgree2B(t *testing.T) {
-	servers := 3
-	cfg := makeConfig(t, servers, false, false)
+	nServers := 3
+	cfg := makeConfig(t, nServers, false, false)
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2B): agreement after follower reconnects")
-	cfg.one(101, servers, false)
+	cfg.one(101, nServers, false)
 	leader := cfg.checkOneLeader()
 
 	// disconnect one follower from the network.
-	cfg.disconnect((leader + 1) % servers)
+	cfg.disconnect((leader + 1) % nServers)
 
 	// the leader and remaining follower should be
 	// able to agree despite the disconnected follower.
-	cfg.one(102, servers-1, false)
-	cfg.one(103, servers-1, false)
+	cfg.one(102, nServers-1, false)
+	cfg.one(103, nServers-1, false)
 	time.Sleep(RaftElectionTimeout)
-	cfg.one(104, servers-1, false)
-	cfg.one(105, servers-1, false)
+	cfg.one(104, nServers-1, false)
+	cfg.one(105, nServers-1, false)
 
 	// reconnect
-	cfg.connect((leader + 1) % servers)
+	cfg.connect((leader + 1) % nServers)
+	log.Println("[TestFailAgree2B] after reconnecting...")
 
 	// the full set of servers should preserve previous agreements,
 	// and be able to agree on new commands.
-	cfg.one(106, servers, true)
+	cfg.one(106, nServers, true)
 	time.Sleep(RaftElectionTimeout)
-	cfg.one(107, servers, true)
+	cfg.one(107, nServers, true)
 
 	cfg.end()
 }
@@ -391,14 +392,13 @@ loop:
 		}
 
 		failed := false
-		cmds := []int{}
+		var cmds []int
 		for index := range is {
 			cmd := cfg.wait(index, servers, term)
 			if ix, ok := cmd.(int); ok {
 				if ix == -1 {
 					// peers have moved on to later terms,
-					// so we can't expect all Start()s to
-					// have succeeded
+					// so we can't expect all Start()s to have succeeded
 					failed = true
 					break
 				}
@@ -437,7 +437,6 @@ loop:
 	if !success {
 		t.Fatalf("term changed too often")
 	}
-
 	cfg.end()
 }
 
@@ -480,34 +479,32 @@ func TestRejoin2B(t *testing.T) {
 }
 
 func TestBackup2B(t *testing.T) {
-	servers := 5
-	cfg := makeConfig(t, servers, false, false)
+	nServers := 5
+	cfg := makeConfig(t, nServers, false, false)
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2B): leader backs up quickly over incorrect follower logs")
-
-	cfg.one(rand.Int(), servers, true)
+	cfg.one(rand.Int(), nServers, true)
 
 	// put leader and one follower in a partition
 	leader1 := cfg.checkOneLeader()
-	cfg.disconnect((leader1 + 2) % servers)
-	cfg.disconnect((leader1 + 3) % servers)
-	cfg.disconnect((leader1 + 4) % servers)
+	cfg.disconnect((leader1 + 2) % nServers)
+	cfg.disconnect((leader1 + 3) % nServers)
+	cfg.disconnect((leader1 + 4) % nServers)
 
 	// submit lots of commands that won't commit
 	for i := 0; i < 50; i++ {
 		cfg.rafts[leader1].StartAgreement(rand.Int())
 	}
-
 	time.Sleep(RaftElectionTimeout / 2)
 
-	cfg.disconnect((leader1 + 0) % servers)
-	cfg.disconnect((leader1 + 1) % servers)
+	cfg.disconnect((leader1 + 0) % nServers)
+	cfg.disconnect((leader1 + 1) % nServers)
 
 	// allow other partition to recover
-	cfg.connect((leader1 + 2) % servers)
-	cfg.connect((leader1 + 3) % servers)
-	cfg.connect((leader1 + 4) % servers)
+	cfg.connect((leader1 + 2) % nServers)
+	cfg.connect((leader1 + 3) % nServers)
+	cfg.connect((leader1 + 4) % nServers)
 
 	// lots of successful commands to new group.
 	for i := 0; i < 50; i++ {
@@ -516,9 +513,9 @@ func TestBackup2B(t *testing.T) {
 
 	// now another partitioned leader and one follower
 	leader2 := cfg.checkOneLeader()
-	other := (leader1 + 2) % servers
+	other := (leader1 + 2) % nServers
 	if leader2 == other {
-		other = (leader2 + 1) % servers
+		other = (leader2 + 1) % nServers
 	}
 	cfg.disconnect(other)
 
@@ -526,15 +523,14 @@ func TestBackup2B(t *testing.T) {
 	for i := 0; i < 50; i++ {
 		cfg.rafts[leader2].StartAgreement(rand.Int())
 	}
-
 	time.Sleep(RaftElectionTimeout / 2)
 
 	// bring original leader back to life,
-	for i := 0; i < servers; i++ {
+	for i := 0; i < nServers; i++ {
 		cfg.disconnect(i)
 	}
-	cfg.connect((leader1 + 0) % servers)
-	cfg.connect((leader1 + 1) % servers)
+	cfg.connect((leader1 + 0) % nServers)
+	cfg.connect((leader1 + 1) % nServers)
 	cfg.connect(other)
 
 	// lots of successful commands to new group.
@@ -543,10 +539,10 @@ func TestBackup2B(t *testing.T) {
 	}
 
 	// now everyone
-	for i := 0; i < servers; i++ {
+	for i := 0; i < nServers; i++ {
 		cfg.connect(i)
 	}
-	cfg.one(rand.Int(), servers, true)
+	cfg.one(rand.Int(), nServers, true)
 
 	cfg.end()
 }

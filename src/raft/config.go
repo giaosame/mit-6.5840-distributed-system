@@ -567,7 +567,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 				}
 			}
 		}
-		// mylog.Debug("config.one", "the index is going to be committed: %d", index)
+		mylog.Debug("config.one", "the index is going to be committed: %d", index)
 
 		if index != -1 {
 			// somebody claimed to be the leader and to have
@@ -575,7 +575,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			t1 := time.Now()
 			for time.Since(t1).Seconds() < 2 {
 				nd, cmd1 := cfg.nCommitted(index)
-				// mylog.Debug("config.one", "nd = %d, cmd1 = %+v", nd, cmd)
+				mylog.Debug("config.one", "nd = %d, cmd1 = %+v", nd, cmd)
 				if nd > 0 && nd >= expectedServers {
 					// committed
 					if cmd1 == cmd {
