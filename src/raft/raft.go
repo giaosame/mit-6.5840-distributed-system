@@ -241,10 +241,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		log.Debug("Raft.AppendEntries", "args.LeaderCommit{%d} > rf.commitIndex{%d} for the raft server %d", args.LeaderCommit, rf.commitIndex, rf.myIdx)
 		rf.commitIndex = common.Min(args.LeaderCommit, rf.getLogLen()-1)
 	}
-	if rf.commitIndex > rf.lastApplied {
-		log.Debug("Raft.AppendEntries", "rf.commitIndex > rf.lastApplied for the raft server %d", rf.myIdx)
+	for rf.commitIndex > rf.lastApplied {
 		rf.lastApplied++
 		go rf.sendApplyMsg(&rf.logs[rf.lastApplied])
+		time.Sleep(ApplyMsgIntervalMS * time.Millisecond)
 	}
 
 	rf.state = Follower
@@ -423,6 +423,7 @@ func (rf *Raft) updateCommitIndex() {
 		}
 
 		if nMatch > len(rf.peers)/2 && rf.logs[n].Term == rf.currentTerm {
+			log.Debug("Raft.updateCommitIndex", "n = %d, nMatch = %d, rf.logs[n] = %+v", n, nMatch, rf.logs[n])
 			log.Debug("Raft.updateCommitIndex", "leader updates its commitIndex to %d", n)
 			rf.commitIndex = n
 			break
