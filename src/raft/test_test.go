@@ -488,11 +488,12 @@ func TestBackup2B(t *testing.T) {
 
 	// put leader and one follower in a partition
 	leader1 := cfg.checkOneLeader()
+	// disconnect the servers in the other partition
 	cfg.disconnect((leader1 + 2) % nServers)
 	cfg.disconnect((leader1 + 3) % nServers)
 	cfg.disconnect((leader1 + 4) % nServers)
 
-	// submit lots of commands that won't commit
+	// submit lots of commands that won't commit, because the majority of servers are disconnected
 	for i := 0; i < 50; i++ {
 		cfg.rafts[leader1].StartAgreement(rand.Int())
 	}
@@ -513,6 +514,7 @@ func TestBackup2B(t *testing.T) {
 
 	// now another partitioned leader and one follower
 	leader2 := cfg.checkOneLeader()
+
 	other := (leader1 + 2) % nServers
 	if leader2 == other {
 		other = (leader2 + 1) % nServers
@@ -525,7 +527,8 @@ func TestBackup2B(t *testing.T) {
 	}
 	time.Sleep(RaftElectionTimeout / 2)
 
-	// bring original leader back to life,
+	// bring original leader back to life
+	log.Println("[TestBackup2B] bring original leader back to life after the 2nd round of StartAgreement")
 	for i := 0; i < nServers; i++ {
 		cfg.disconnect(i)
 	}
@@ -543,7 +546,6 @@ func TestBackup2B(t *testing.T) {
 		cfg.connect(i)
 	}
 	cfg.one(rand.Int(), nServers, true)
-
 	cfg.end()
 }
 
