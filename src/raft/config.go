@@ -560,7 +560,6 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			}
 			cfg.mu.Unlock()
 			if rf != nil {
-				mylog.Debug("config.one", "before calling StartAgreement()")
 				index1, _, isLeader := rf.StartAgreement(cmd)
 				if isLeader {
 					index = index1
