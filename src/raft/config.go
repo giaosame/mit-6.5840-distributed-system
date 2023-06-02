@@ -148,7 +148,7 @@ func (cfg *config) checkLogs(i int, m ApplyMsg) (string, bool) {
 		if old, oldOk := cfg.logs[j][m.CommandIndex]; oldOk && old != v {
 			log.Printf("%v: log %v; server %v\n", i, cfg.logs[i], cfg.logs[j])
 			// some server has already committed a different value for this entry!
-			errMsg = fmt.Sprintf("commit index=%v server=%v %v != server=%v %v",
+			errMsg = fmt.Sprintf("commit index=%v, server(%v)'s cmd{%v} != server(%v)'s cmd{%v}",
 				m.CommandIndex, i, m.Command, j, old)
 		}
 	}
@@ -259,10 +259,9 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 			// Ignore other types of ApplyMsg.
 		}
 		if errMsg != "" {
-			log.Fatalf("apply error: %v", errMsg)
+			log.Printf("apply error: %v", errMsg)
 			cfg.applyErr[i] = errMsg
-			// keep reading after error so that Raft doesn't block
-			// holding locks...
+			// keep reading after error so that Raft doesn't block holding locks...
 		}
 	}
 }

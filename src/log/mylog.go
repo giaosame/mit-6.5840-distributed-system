@@ -33,10 +33,20 @@ func init() {
 	}
 }
 
-func Debug(funcName string, format string, args ...interface{}) {
+func myPrint(prefix string, format string, args ...interface{}) {
 	if verbose == 1 {
 		t := time.Now().UnixMilli()
-		prefix := fmt.Sprintf("@%d [%s] ", t, funcName)
-		log.Printf(fmt.Sprintf(prefix+format, args...))
+		prefixWithTime := fmt.Sprintf("@%d %s", t, prefix)
+		log.Printf(fmt.Sprintf(prefixWithTime+format, args...))
 	}
+}
+
+func Debug(funcName string, format string, args ...interface{}) {
+	prefix := fmt.Sprintf("DEBUG [%s] ", funcName)
+	myPrint(prefix, format, args)
+}
+
+func Error(funcName string, format string, args ...interface{}) {
+	prefix := fmt.Sprintf("ERROR [%s] ", funcName)
+	myPrint(prefix, format, args)
 }

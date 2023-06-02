@@ -660,47 +660,46 @@ loop:
 }
 
 func TestPersist12C(t *testing.T) {
-	servers := 3
-	cfg := makeConfig(t, servers, false, false)
+	nServers := 3
+	cfg := makeConfig(t, nServers, false, false)
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2C): basic persistence")
-
-	cfg.one(11, servers, true)
+	cfg.one(11, nServers, true)
 
 	// crash and re-start all
-	for i := 0; i < servers; i++ {
+	for i := 0; i < nServers; i++ {
 		cfg.start1(i, cfg.applier)
 	}
-	for i := 0; i < servers; i++ {
+	for i := 0; i < nServers; i++ {
 		cfg.disconnect(i)
 		cfg.connect(i)
 	}
 
-	cfg.one(12, servers, true)
+	cfg.one(12, nServers, true)
 
 	leader1 := cfg.checkOneLeader()
 	cfg.disconnect(leader1)
 	cfg.start1(leader1, cfg.applier)
 	cfg.connect(leader1)
 
-	cfg.one(13, servers, true)
+	cfg.one(13, nServers, true)
 
 	leader2 := cfg.checkOneLeader()
 	cfg.disconnect(leader2)
-	cfg.one(14, servers-1, true)
+	cfg.one(14, nServers-1, true)
 	cfg.start1(leader2, cfg.applier)
 	cfg.connect(leader2)
 
-	cfg.wait(4, servers, -1) // wait for leader2 to join before killing i3
+	cfg.wait(4, nServers, -1) // wait for leader2 to join before killing i3
 
-	i3 := (cfg.checkOneLeader() + 1) % servers
+	i3 := (cfg.checkOneLeader() + 1) % nServers
 	cfg.disconnect(i3)
-	cfg.one(15, servers-1, true)
+	cfg.one(15, nServers-1, true)
 	cfg.start1(i3, cfg.applier)
 	cfg.connect(i3)
 
-	cfg.one(16, servers, true)
+	cfg.one(16, nServers, true)
 
 	cfg.end()
 }
