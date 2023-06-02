@@ -16,13 +16,15 @@ package raft
 //
 
 import (
+	"bytes"
+	"errors"
 	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	//	"6.5840/labgob"
 	"6.5840/common"
+	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/log"
 )
@@ -87,22 +89,51 @@ func (rf *Raft) GetState() (int, bool) {
 	return rf.currentTerm, rf.state == Leader
 }
 
-// save Raft's persistent state to stable storage,
+// persist saves Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
-// before you've implemented snapshots, you should pass nil as the
-// second argument to persister.Save().
-// after you've implemented snapshots, pass the current snapshot
-// (or nil if there's not yet a snapshot).
+// before you've implemented snapshots, you should pass nil as the second argument to persister.Save().
+// after you've implemented snapshots, pass the current snapshot (or nil if there's not yet a snapshot).
 func (rf *Raft) persist() {
-	// TODO: Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// raftstate := w.Bytes()
-	// rf.persister.Save(raftstate, nil)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+
+	rf.mtx.Lock()
+	defer rf.mtx.Unlock()
+	if err := rf.encode(e); err != nil {
+		log.Error("rf.persist", "raft server %d %v", rf.myIdx, err)
+		return
+	}
+	raftState := w.Bytes()
+	rf.persister.Save(raftState, nil)
+}
+
+// encode encodes the persistent state of this raft server
+func (rf *Raft) encode(e *labgob.LabEncoder) error {
+	if err := e.Encode(rf.currentTerm); err != nil {
+		return errors.New("failed to encode currentTerm: " + err.Error())
+	}
+	if err := e.Encode(rf.votedFor); err != nil {
+		return errors.New("failed to encode votedFor: " + err.Error())
+	}
+	if err := e.Encode(rf.logs); err != nil {
+		return errors.New("failed to encode logs: " + err.Error())
+	}
+	return nil
+}
+
+// decode decodes the persistent state of this raft server
+func (rf *Raft) decode(d *labgob.LabDecoder) error {
+	if err := d.Decode(&rf.currentTerm); err != nil {
+		return errors.New("failed to decode currentTerm: " + err.Error())
+	}
+	if err := d.Decode(&rf.votedFor); err != nil {
+		return errors.New("failed to decode votedFor: " + err.Error())
+	}
+	if err := d.Decode(&rf.logs); err != nil {
+		return errors.New("failed to decode logs: " + err.Error())
+	}
+	return nil
 }
 
 // restore previously persisted state.
@@ -110,19 +141,13 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
+
 	// TODO: Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+	buf := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(buf)
+	if err := rf.decode(d); err != nil {
+		log.Error("[rf.readPersist]", "raft server %d %v", rf.myIdx, err)
+	}
 }
 
 // the service says it has created a snapshot that has
@@ -235,6 +260,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// append any new entries to the logs
 	if len(args.Entries) > 0 {
 		rf.logs = append(rf.logs, args.Entries...)
+		// log.Debug("Raft.AppendEntries", "logs of the raft server %d: %+v", rf.myIdx, rf.logs)
 	}
 
 	if args.LeaderCommit > rf.commitIndex {
@@ -309,10 +335,9 @@ func (rf *Raft) sendRequestVote(wg *sync.WaitGroup, serverIdx int, nVotes *int) 
 	rf.mtx.Lock()
 	if reqVoteReply.Term > rf.currentTerm {
 		rf.demote(reqVoteReply.Term)
-	}
-	if reqVoteReply.VoteGranted && rf.state == Candidate {
+	} else if reqVoteReply.Term == rf.currentTerm && reqVoteReply.VoteGranted && rf.state == Candidate {
 		*nVotes++
-	}
+	} // drop when reqVoteReply.Term < rf.currentTerm
 	rf.mtx.Unlock()
 }
 
@@ -357,12 +382,17 @@ func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int) {
 		rf.mtx.Lock()
 		if appendEntriesReply.Term > rf.currentTerm {
 			log.Debug("Raft.sendAppendEntriesAsync",
-				"the leader %d is demoted because it's term is smaller than the term of the raft server %d",
+				"leader %d is demoted because it's term is smaller than the term of the raft server %d",
 				rf.myIdx, serverIdx)
 			rf.demote(appendEntriesReply.Term)
 			rf.mtx.Unlock()
 			return
 		}
+		//else if appendEntriesReply.Term < rf.currentTerm {
+		//	log.Debug("Raft.sendAppendEntriesAsync", "leader %d received a reply with old term", rf.myIdx)
+		//	rf.mtx.Unlock()
+		//	return
+		//}
 		rf.mtx.Unlock()
 
 		if appendEntriesReply.Success {
@@ -423,7 +453,6 @@ func (rf *Raft) updateCommitIndex() {
 		}
 
 		if nMatch > len(rf.peers)/2 && rf.logs[n].Term == rf.currentTerm {
-			log.Debug("Raft.updateCommitIndex", "n = %d, nMatch = %d, rf.logs[n] = %+v", n, nMatch, rf.logs[n])
 			log.Debug("Raft.updateCommitIndex", "leader updates its commitIndex to %d", n)
 			rf.commitIndex = n
 			break
@@ -461,7 +490,7 @@ func (rf *Raft) startElection() {
 	rf.mtx.Lock()
 	if nVotes > len(rf.peers)/2 && rf.state == Candidate {
 		rf.state = Leader
-		rf.logs = rf.logs[:rf.commitIndex+1] // TODO: need to think twice about removing uncommitted log entries
+		rf.logs = rf.logs[:rf.commitIndex+1] // remove uncommitted log entries to prevent duplicate operations
 		for i := range rf.nextIndices {
 			rf.nextIndices[i] = rf.getLogLen()
 		}
@@ -572,12 +601,14 @@ func MakeRaft(peers []*labrpc.ClientEnd, myIdx int, persister *Persister, applyC
 	rf.persister = persister
 	rf.myIdx = myIdx
 
-	// TODO: Your initialization code here (2C).
+	// persistent state:
 	rf.state = Follower
 	rf.votedFor = NullCandidate
+	rf.logs = []LogEntry{{}} // to make logs' first index 1
+	rf.persist()
+
 	rf.applyCh = applyCh
 	rf.heartbeatCh = make(chan struct{})
-	rf.logs = []LogEntry{{}} // to make logs' first index 1
 	rf.nextIndices = make([]int, len(peers))
 	rf.matchIndices = make([]int, len(peers))
 

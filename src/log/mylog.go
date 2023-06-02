@@ -36,17 +36,17 @@ func init() {
 func myPrint(prefix string, format string, args ...interface{}) {
 	if verbose == 1 {
 		t := time.Now().UnixMilli()
-		prefixWithTime := fmt.Sprintf("@%d %s", t, prefix)
+		prefixWithTime := fmt.Sprintf("@%d %s ", t, prefix)
 		log.Printf(fmt.Sprintf(prefixWithTime+format, args...))
 	}
 }
 
 func Debug(funcName string, format string, args ...interface{}) {
-	prefix := fmt.Sprintf("DEBUG [%s] ", funcName)
-	myPrint(prefix, format, args)
+	prefix := fmt.Sprintf("DEBUG [%s]", funcName)
+	myPrint(prefix, format, args...)
 }
 
 func Error(funcName string, format string, args ...interface{}) {
 	prefix := fmt.Sprintf("ERROR [%s] ", funcName)
-	myPrint(prefix, format, args)
+	myPrint(prefix, format, args...)
 }
