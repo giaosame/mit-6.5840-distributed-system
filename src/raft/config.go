@@ -112,7 +112,7 @@ func makeConfig(t *testing.T, nServers int, unreliable bool, snapshot bool) *con
 }
 
 // crash1 shuts down a Raft server but saves its persistent state
-func (cfg *config) crash1(i int) { // TODO: rename to crashRaft
+func (cfg *config) crash1(i int) {
 	cfg.disconnect(i)
 	cfg.net.DeleteServer(i) // disable client connections to the server.
 
@@ -148,7 +148,7 @@ func (cfg *config) checkLogs(i int, m ApplyMsg) (string, bool) {
 		if old, oldOk := cfg.logs[j][m.CommandIndex]; oldOk && old != v {
 			log.Printf("%v: log %v; server %v\n", i, cfg.logs[i], cfg.logs[j])
 			// some server has already committed a different value for this entry!
-			errMsg = fmt.Sprintf("commit index=%v, server(%v)'s cmd{%v} != server(%v)'s cmd{%v}",
+			errMsg = fmt.Sprintf("commit index=%v, server%v's cmd{%v} != server%v's cmd{%v}",
 				m.CommandIndex, i, m.Command, j, old)
 		}
 	}
@@ -290,10 +290,8 @@ func (cfg *config) start1(i int, applier func(int, chan ApplyMsg)) { // TODO: re
 	cfg.mu.Lock()
 	cfg.lastApplied[i] = 0
 
-	// a fresh persister, so old instance doesn't overwrite
-	// new instance's persisted state.
-	// but copy old persister's content so that we always
-	// pass Make() the last persisted state.
+	// a fresh persister, so old instance doesn't overwrite new instance's persisted state.
+	// but copy old persister's content so that we always pass Make() the last persisted state.
 	if cfg.saved[i] != nil {
 		cfg.saved[i] = cfg.saved[i].Copy()
 

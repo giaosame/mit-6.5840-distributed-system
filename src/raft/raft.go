@@ -67,8 +67,6 @@ type Raft struct {
 	applyCh     chan ApplyMsg       // a channel to send ApplyMsg to the service (or tester)
 	heartbeatCh chan struct{}       // a channel to receive heartbeat from the leader
 
-	// TODO: 2C. Look at the paper's Figure 2 for a description of what state a Raft server must maintain.
-
 	// ========= persistent state on all servers =========
 	state       int        // current state of the server
 	currentTerm int        // latest term server has seen (initialized to 0 on first boot, increases monotonically)
@@ -98,18 +96,20 @@ func (rf *Raft) persist() {
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 
-	rf.mtx.Lock()
-	defer rf.mtx.Unlock()
 	if err := rf.encode(e); err != nil {
 		log.Error("rf.persist", "raft server %d %v", rf.myIdx, err)
 		return
 	}
+	log.Debug("raft.persist", "raft server %d encoded persistent state: %s", rf.myIdx, rf.getPersistentState())
 	raftState := w.Bytes()
 	rf.persister.Save(raftState, nil)
 }
 
 // encode encodes the persistent state of this raft server
 func (rf *Raft) encode(e *labgob.LabEncoder) error {
+	if err := e.Encode(rf.state); err != nil {
+		return errors.New("failed to encode state: " + err.Error())
+	}
 	if err := e.Encode(rf.currentTerm); err != nil {
 		return errors.New("failed to encode currentTerm: " + err.Error())
 	}
@@ -124,6 +124,9 @@ func (rf *Raft) encode(e *labgob.LabEncoder) error {
 
 // decode decodes the persistent state of this raft server
 func (rf *Raft) decode(d *labgob.LabDecoder) error {
+	if err := d.Decode(&rf.state); err != nil {
+		return errors.New("failed to decode state: " + err.Error())
+	}
 	if err := d.Decode(&rf.currentTerm); err != nil {
 		return errors.New("failed to decode currentTerm: " + err.Error())
 	}
@@ -142,12 +145,13 @@ func (rf *Raft) readPersist(data []byte) {
 		return
 	}
 
-	// TODO: Your code here (2C).
 	buf := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(buf)
 	if err := rf.decode(d); err != nil {
 		log.Error("[rf.readPersist]", "raft server %d %v", rf.myIdx, err)
 	}
+	log.Debug("raft.readPersist", "raft server %d reads persistent state from decoder: %s",
+		rf.myIdx, rf.getPersistentState())
 }
 
 // the service says it has created a snapshot that has
@@ -206,6 +210,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.currentTerm = args.Term
 	rf.state = Follower
 	rf.votedFor = args.CandidateId
+	rf.persist()
+
 	reply.Term = args.Term
 	reply.VoteGranted = true
 	heartbeat = true
@@ -259,7 +265,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// append any new entries to the logs
 	if len(args.Entries) > 0 {
-		rf.logs = append(rf.logs, args.Entries...)
+		rf.pushBack(args.Entries...)
 		// log.Debug("Raft.AppendEntries", "logs of the raft server %d: %+v", rf.myIdx, rf.logs)
 	}
 
@@ -345,6 +351,10 @@ func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int) {
 	defer wg.Done()
 	rf.mtx.Lock()
 	prevLogIndex := rf.nextIndices[serverIdx] - 1
+	//if prevLogIndex < 0 {
+	//	rf.mtx.Unlock()
+	//	return
+	//}
 	prevLogTerm := rf.logs[prevLogIndex].Term
 	appendEntriesArgs := AppendEntriesArgs{
 		Term:         rf.currentTerm,
@@ -473,6 +483,7 @@ func (rf *Raft) startElection() {
 	rf.state = Candidate
 	rf.votedFor = rf.myIdx
 	rf.currentTerm++
+	rf.persist()
 	rf.mtx.Unlock()
 	log.Debug("Raft.startElection", "raft server %d starts the election!", rf.myIdx)
 
@@ -489,11 +500,7 @@ func (rf *Raft) startElection() {
 	log.Debug("Raft.startElection", "raft server %d got %d votes", rf.myIdx, nVotes)
 	rf.mtx.Lock()
 	if nVotes > len(rf.peers)/2 && rf.state == Candidate {
-		rf.state = Leader
-		rf.logs = rf.logs[:rf.commitIndex+1] // remove uncommitted log entries to prevent duplicate operations
-		for i := range rf.nextIndices {
-			rf.nextIndices[i] = rf.getLogLen()
-		}
+		rf.promote()
 	} else {
 		rf.demote(rf.currentTerm)
 	}
@@ -521,11 +528,22 @@ func (rf *Raft) sendApplyMsg(entry *LogEntry) {
 	}
 }
 
+// promote promotes the candidate to be the leader
+func (rf *Raft) promote() {
+	rf.state = Leader
+	rf.logs = rf.logs[:rf.commitIndex+1] // remove uncommitted log entries to prevent duplicate operations
+	rf.persist()
+	for i := range rf.nextIndices {
+		rf.nextIndices[i] = rf.getLogLen()
+	}
+}
+
 // demote demotes the leader itself to be a follower
 func (rf *Raft) demote(newTerm int) {
 	rf.state = Follower
 	rf.votedFor = NullCandidate
 	rf.currentTerm = newTerm
+	rf.persist()
 }
 
 // StartAgreement is called by the service using Raft (e.g. a k/v server)
@@ -552,7 +570,7 @@ func (rf *Raft) StartAgreement(command interface{}) (int, int, bool) {
 	// add the new command into logs
 	index := rf.getLogLen()
 	term := rf.currentTerm
-	entry := &LogEntry{
+	entry := LogEntry{
 		Idx:     index,
 		Term:    term,
 		Command: command,
@@ -605,7 +623,6 @@ func MakeRaft(peers []*labrpc.ClientEnd, myIdx int, persister *Persister, applyC
 	rf.state = Follower
 	rf.votedFor = NullCandidate
 	rf.logs = []LogEntry{{}} // to make logs' first index 1
-	rf.persist()
 
 	rf.applyCh = applyCh
 	rf.heartbeatCh = make(chan struct{})
@@ -614,6 +631,13 @@ func MakeRaft(peers []*labrpc.ClientEnd, myIdx int, persister *Persister, applyC
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	rf.mtx.Lock()
+	if rf.state == Leader {
+		for i := range rf.nextIndices {
+			rf.nextIndices[i] = rf.getLogLen()
+		}
+	}
+	rf.mtx.Unlock()
 
 	// set up the random generator
 	seed := int64(myIdx)

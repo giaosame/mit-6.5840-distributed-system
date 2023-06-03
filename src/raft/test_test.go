@@ -667,7 +667,7 @@ func TestPersist12C(t *testing.T) {
 	cfg.begin("Test (2C): basic persistence")
 	cfg.one(11, nServers, true)
 
-	// crash and re-start all
+	// crash and restart all
 	for i := 0; i < nServers; i++ {
 		cfg.start1(i, cfg.applier)
 	}
@@ -675,7 +675,6 @@ func TestPersist12C(t *testing.T) {
 		cfg.disconnect(i)
 		cfg.connect(i)
 	}
-
 	cfg.one(12, nServers, true)
 
 	leader1 := cfg.checkOneLeader()
