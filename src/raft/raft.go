@@ -84,7 +84,11 @@ type Raft struct {
 
 // GetState returns currentTerm and whether this server believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-	return rf.currentTerm, rf.state == Leader
+	rf.mtx.Lock()
+	currentTerm := rf.currentTerm
+	isLeader := rf.state == Leader
+	rf.mtx.Unlock()
+	return currentTerm, isLeader
 }
 
 // save Raft's persistent state to stable storage,
@@ -150,7 +154,6 @@ type RequestVoteReply struct {
 
 // RequestVote is invoked by candidates to gather votes
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	log.Debug("Raft.RequestVote", "raft server %d received RequestVote from the candidate %d: args.Term=%d, rf.currentTerm=%d", rf.myIdx, args.CandidateId, args.Term, rf.currentTerm)
 	heartbeat := false
 
 	defer func() {
@@ -161,6 +164,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}()
 
 	rf.mtx.Lock()
+	log.Debug("Raft.RequestVote", "raft server %d received RequestVote from the candidate %d: args.Term=%d, rf.currentTerm=%d", rf.myIdx, args.CandidateId, args.Term, rf.currentTerm)
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		return
@@ -390,12 +394,14 @@ func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int, nRepli
 
 func (rf *Raft) sendHeartbeatAsync(wg *sync.WaitGroup, serverIdx int) {
 	defer wg.Done()
+	rf.mtx.Lock()
 	appendEntriesArgs := AppendEntriesArgs{
 		Term:         rf.currentTerm,
 		LeaderId:     rf.myIdx,
 		LeaderCommit: rf.commitIndex,
 	}
 	appendEntriesReply := AppendEntriesReply{}
+	rf.mtx.Unlock()
 
 	ok := false
 	done := make(chan bool)
@@ -448,7 +454,8 @@ func (rf *Raft) killed() bool {
 func (rf *Raft) heartbeat() {
 	for rf.killed() == false {
 		// check if a leader election should be started
-		if rf.state == Leader { // I'm the leader, send heartbeat to maintain their authority
+		_, isLeader := rf.GetState()
+		if isLeader { // I'm the leader, send heartbeat to maintain their authority
 			rf.sendHeartbeat()
 			time.Sleep(time.Duration(HeartBeatIntervalMS) * time.Millisecond)
 			continue
