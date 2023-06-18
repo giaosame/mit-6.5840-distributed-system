@@ -281,8 +281,9 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 // serverIdx is the index of the target server in rf.peers[].
 func (rf *Raft) sendRequestVote(wg *sync.WaitGroup, serverIdx int, nVotes *int) {
 	defer wg.Done()
-	lastLog := rf.getLastLogEntry()
 
+	rf.mtx.Lock()
+	lastLog := rf.getLastLogEntry()
 	reqVoteArgs := RequestVoteArgs{
 		Term:         rf.currentTerm,
 		CandidateId:  rf.myIdx,
@@ -290,6 +291,7 @@ func (rf *Raft) sendRequestVote(wg *sync.WaitGroup, serverIdx int, nVotes *int) 
 		LastLogTerm:  lastLog.Term,
 	}
 	reqVoteReply := RequestVoteReply{}
+	rf.mtx.Unlock()
 
 	ok := false
 	done := make(chan bool)
@@ -377,24 +379,24 @@ func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int) {
 		// else AppendEntries fails because of log inconsistency, decrement nextIndex and retry
 		rf.mtx.Lock()
 		addFirst(&appendEntriesArgs.Entries, &rf.logs[prevLogIndex])
-		rf.mtx.Unlock()
-
 		prevLogIndex--
 		if prevLogIndex < 0 {
 			// it should not be less than 0, if it is, then it means that the currentTerm is less than the reply.Term
+			rf.mtx.Unlock()
 			return
 		}
-
-		rf.mtx.Lock()
 		prevLogTerm = rf.logs[prevLogIndex].Term
 		rf.mtx.Unlock()
+
 		appendEntriesArgs.PrevLogIndex = prevLogIndex
 		appendEntriesArgs.PrevLogTerm = prevLogTerm
 	}
 
 	// update nextIndex and matchIndex for this follower
 	if len(appendEntriesArgs.Entries) > 0 {
+		rf.mtx.Lock()
 		rf.nextIndices[serverIdx] = rf.getLogLen()
+		rf.mtx.Unlock()
 		rf.matchIndices[serverIdx] = prevLogIndex + len(appendEntriesArgs.Entries)
 	}
 }
@@ -425,6 +427,10 @@ func (rf *Raft) updateCommitIndex() {
 	// a majority of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N
 	rf.mtx.Lock()
 	defer rf.mtx.Unlock()
+	if rf.state != Leader {
+		return
+	}
+
 	for n := rf.getLogLen() - 1; n > rf.commitIndex; n-- {
 		nMatch := 0
 		for i := range rf.peers {
