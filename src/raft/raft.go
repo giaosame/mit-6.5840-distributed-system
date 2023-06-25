@@ -155,7 +155,6 @@ type RequestVoteReply struct {
 // RequestVote is invoked by candidates to gather votes
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	heartbeat := false
-
 	defer func() {
 		rf.mtx.Unlock()
 		if heartbeat {
@@ -174,7 +173,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 	if rf.moreUpToDate(args.LastLogTerm, args.LastLogIndex) {
-		// log.Debug("Raft.RequestVote", "lastLog={%+v}, args.LastLogTerm=%d, args.LastLogIndex=%d", *rf.getLastLogEntry(), args.LastLogTerm, args.LastLogIndex)
+		log.Debug("Raft.RequestVote", "lastLog={%+v}, args.LastLogTerm=%d, args.LastLogIndex=%d", *rf.getLastLogEntry(), args.LastLogTerm, args.LastLogIndex)
 		return
 	}
 
@@ -182,6 +181,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// 1. args.Term == rf.currentTerm && rf.votedFor == NullCandidate (not voted yet)
 	// 2. args.Term > rf.currentTerm
 	log.Debug("Raft.RequestVote", "raft server %d voted for %d previously, votes for the candidate %d", rf.myIdx, rf.votedFor, args.CandidateId)
+	log.Debug("Raft.RequestVote", "raft server %d logs: %+v", rf.myIdx, rf.logs)
 	rf.currentTerm = args.Term
 	rf.state = Follower
 	rf.votedFor = args.CandidateId
@@ -207,10 +207,10 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	heartbeat := false
 	rf.mtx.Lock()
+	log.Debug("Raft.AppendEntries", "raft server %d received heartbeat=%+v", rf.myIdx, *args)
 	defer func() {
 		rf.mtx.Unlock()
 		if heartbeat {
-			log.Debug("Raft.AppendEntries", "raft server %d received heartbeat=%+v", rf.myIdx, *args)
 			rf.heartbeatCh <- struct{}{}
 		}
 	}()
@@ -225,23 +225,27 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	// check prevLogIndex and prevLogTerm
 	prevLogIndex := args.PrevLogIndex
 	prevLogTerm := args.PrevLogTerm
-	if prevLogIndex >= rf.getLogLen() || rf.logs[prevLogIndex].Term != prevLogTerm {
+	if prevLogIndex >= rf.getLogLen() || rf.logs[prevLogIndex].Term != prevLogTerm { // command not equal
+		//log.Debug("Raft.AppendEntries", "prevLogIndex >= rf.getLogLen() || rf.logs[prevLogIndex].Term != prevLogTerm for the raft server %d", rf.myIdx)
 		return // reply false if log does not contain an entry at prevLogIndex whose term matches prevLogTerm
 	}
 
 	// if an existing entry conflicts with a new one (same index but different terms),
 	// delete the existing entry and all that follow it
 	if prevLogIndex+1 < rf.getLogLen() {
-		// log.Debug("Raft.AppendEntries", "removed conflicted logs")
+		// log.Debug("Raft.AppendEntries", "prevLogIndex+1 < rf.getLogLen() for the raft server %d", rf.myIdx)
 		rf.logs = rf.logs[:prevLogIndex+1]
 	}
 
 	// append any new entries to the logs
 	if len(args.Entries) > 0 {
+		log.Debug("Raft.AppendEntries", "len(args.Entries) > 0 for the raft server %d, entries = %+v", rf.myIdx, args.Entries)
 		rf.logs = append(rf.logs, args.Entries...)
 	}
 
 	if args.LeaderCommit > rf.commitIndex {
+		log.Debug("Raft.RequestVote", "raft server %d received AppendEntries from the leader %d: args = {term=%d, PrevLogIndex=%d, PrevLogTerm=%d, LeaderCommit=%d}",
+			rf.myIdx, args.LeaderId, args.Term, args.PrevLogIndex, args.PrevLogTerm, args.LeaderCommit)
 		log.Debug("Raft.AppendEntries", "args.LeaderCommit{%d} > rf.commitIndex{%d} for the raft server %d", args.LeaderCommit, rf.commitIndex, rf.myIdx)
 		rf.commitIndex = common.Min(args.LeaderCommit, rf.getLogLen()-1)
 	}
@@ -344,17 +348,24 @@ func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int) {
 		appendEntriesReply = AppendEntriesReply{}
 		ok := false
 		done := make(chan bool)
+
+		rf.mtx.Lock()
+		if rf.state != Leader { // make sure this raft server is still the leader when sending AppendEntries
+			rf.mtx.Unlock()
+			return
+		}
 		go func() {
 			ok = rf.peers[serverIdx].Call("Raft.AppendEntries", &appendEntriesArgs, &appendEntriesReply)
 			done <- true
 		}()
+		rf.mtx.Unlock()
 
 		timeout := time.After(time.Duration(RespWaitingTimeoutMS) * time.Millisecond)
 		select {
 		case <-done:
 			break
 		case <-timeout:
-			log.Debug("Raft.sendAppendEntriesAsync", "timed out to get the response from the raft server %d", serverIdx)
+			// log.Debug("Raft.sendAppendEntriesAsync", "timed out to get the response from the raft server %d", serverIdx)
 			return
 		}
 		if !ok { // no response received, this server is down
@@ -378,7 +389,7 @@ func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int) {
 
 		// else AppendEntries fails because of log inconsistency, decrement nextIndex and retry
 		rf.mtx.Lock()
-		addFirst(&appendEntriesArgs.Entries, &rf.logs[prevLogIndex])
+		addFirst(&appendEntriesArgs.Entries, rf.logs[prevLogIndex])
 		prevLogIndex--
 		if prevLogIndex < 0 {
 			// it should not be less than 0, if it is, then it means that the currentTerm is less than the reply.Term
@@ -396,8 +407,8 @@ func (rf *Raft) sendAppendEntriesAsync(wg *sync.WaitGroup, serverIdx int) {
 	if len(appendEntriesArgs.Entries) > 0 {
 		rf.mtx.Lock()
 		rf.nextIndices[serverIdx] = rf.getLogLen()
-		rf.mtx.Unlock()
 		rf.matchIndices[serverIdx] = prevLogIndex + len(appendEntriesArgs.Entries)
+		rf.mtx.Unlock()
 	}
 }
 
@@ -448,7 +459,7 @@ func (rf *Raft) updateCommitIndex() {
 	}
 
 	if rf.commitIndex > rf.lastApplied {
-		log.Debug("Raft.updateCommitIndex", "logs of leader: %+v", rf.logs)
+		log.Debug("Raft.updateCommitIndex", "logs of leader(%d): %+v", rf.myIdx, rf.logs)
 		rf.lastApplied++
 		appliedEntry := rf.logs[rf.lastApplied]
 		go rf.sendApplyMsg(appliedEntry.Command, appliedEntry.Idx)
@@ -462,7 +473,7 @@ func (rf *Raft) startElection() {
 	rf.votedFor = rf.myIdx
 	rf.currentTerm++
 	rf.mtx.Unlock()
-	log.Debug("Raft.startElection", "raft server %d starts the election!", rf.myIdx)
+	log.Debug("Raft.startElection", "raft server %d starts the election at term %d!", rf.myIdx, rf.currentTerm)
 
 	nVotes := 1 // number of received votes
 	for i := range rf.peers {
@@ -478,7 +489,7 @@ func (rf *Raft) startElection() {
 	rf.mtx.Lock()
 	if nVotes > len(rf.peers)/2 && rf.state == Candidate {
 		rf.state = Leader
-		rf.logs = rf.logs[:rf.commitIndex+1] // TODO: need to think twice about removing uncommitted log entries
+		// rf.logs = rf.logs[:rf.commitIndex+1] // TODO: need to think twice about removing uncommitted log entries
 		for i := range rf.nextIndices {
 			rf.nextIndices[i] = rf.getLogLen()
 		}
@@ -490,6 +501,11 @@ func (rf *Raft) startElection() {
 
 func (rf *Raft) sendAppendEntries() {
 	log.Debug("Raft.sendAppendEntries", "raft server %d begins to send sendAppendEntries...", rf.myIdx)
+	rf.mtx.Lock()
+	if rf.getLogLen() > 100 {
+		log.Debug("Raft.startElection", "leader(%d)'s logs: %+v", rf.myIdx, rf.logs)
+	}
+	rf.mtx.Unlock()
 	var wg sync.WaitGroup
 	for i := range rf.peers {
 		if i == rf.myIdx {
@@ -533,7 +549,7 @@ func (rf *Raft) StartAgreement(command interface{}) (int, int, bool) {
 	defer rf.mtx.Unlock()
 
 	if rf.state != Leader {
-		return -1, -1, false
+		return -1, rf.currentTerm, false
 	}
 	log.Debug("Raft.StartAgreement", "raft server %d begins to start agreement on the command {%v}...", rf.myIdx, command)
 

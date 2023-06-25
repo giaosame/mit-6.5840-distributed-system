@@ -146,9 +146,9 @@ func (cfg *config) checkLogs(i int, m ApplyMsg) (string, bool) {
 	v := m.Command
 	for j := 0; j < len(cfg.logs); j++ {
 		if old, oldOk := cfg.logs[j][m.CommandIndex]; oldOk && old != v {
-			log.Printf("%v: log %v; server %v\n", i, cfg.logs[i], cfg.logs[j])
+			log.Printf("server %d: log %v; server %d: log %v\n", i, cfg.logs[i], j, cfg.logs[j])
 			// some server has already committed a different value for this entry!
-			errMsg = fmt.Sprintf("commit index=%v server=%v %v != server=%v %v",
+			errMsg = fmt.Sprintf("commitIndex[%v] of server[%v] is Cmd %v != server[%v]'s Cmd %v",
 				m.CommandIndex, i, m.Command, j, old)
 		}
 	}
@@ -575,7 +575,7 @@ func (cfg *config) one(cmd interface{}, expectedServers int, retry bool) int {
 			t1 := time.Now()
 			for time.Since(t1).Seconds() < 2 {
 				nd, cmd1 := cfg.nCommitted(index)
-				mylog.Debug("config.one", "nd = %d, cmd1 = %+v", nd, cmd)
+				// mylog.Debug("config.one", "nd = %d, cmd1 = %+v", nd, cmd)
 				if nd > 0 && nd >= expectedServers {
 					// committed
 					if cmd1 == cmd {
