@@ -287,6 +287,10 @@ func (rf *Raft) sendRequestVote(wg *sync.WaitGroup, serverIdx int, nVotes *int) 
 	defer wg.Done()
 
 	rf.mtx.Lock()
+	if rf.state != Candidate {
+		rf.mtx.Unlock()
+		return
+	}
 	lastLog := rf.getLastLogEntry()
 	reqVoteArgs := RequestVoteArgs{
 		Term:         rf.currentTerm,
@@ -295,15 +299,15 @@ func (rf *Raft) sendRequestVote(wg *sync.WaitGroup, serverIdx int, nVotes *int) 
 		LastLogTerm:  lastLog.Term,
 	}
 	reqVoteReply := RequestVoteReply{}
-	rf.mtx.Unlock()
-
 	ok := false
 	done := make(chan bool)
+
 	go func() {
-		// serverIdx is the index of the target server in rf.peers[]
+		// serverIdx is the index of the target server in rf.peers
 		ok = rf.peers[serverIdx].Call("Raft.RequestVote", &reqVoteArgs, &reqVoteReply)
 		done <- true
 	}()
+	rf.mtx.Unlock()
 
 	timeout := time.After(time.Duration(RespWaitingTimeoutMS) * time.Millisecond)
 	select {
