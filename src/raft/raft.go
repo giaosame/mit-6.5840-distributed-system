@@ -252,8 +252,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	for rf.commitIndex > rf.lastApplied {
 		rf.lastApplied++
 		appliedEntry := rf.logs[rf.lastApplied]
-		go rf.sendApplyMsg(appliedEntry.Command, appliedEntry.Idx)
-		time.Sleep(ApplyMsgIntervalMS * time.Millisecond)
+		rf.sendApplyMsg(appliedEntry.Command, appliedEntry.Idx)
+		//time.Sleep(ApplyMsgIntervalMS * time.Millisecond)
 	}
 
 	rf.state = Follower
