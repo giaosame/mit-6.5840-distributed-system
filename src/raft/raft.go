@@ -248,10 +248,6 @@ func (rf *Raft) sendHeartbeat() {
 	}
 }
 
-func (rf *Raft) SendAppendEntries() {
-
-}
-
 // The service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
 // server isn't the leader, returns false. otherwise start the
@@ -274,7 +270,7 @@ func (rf *Raft) StartAgreement(command interface{}) (int, int, bool) {
 	return index, term, isLeader
 }
 
-// Lead does leader's work to lead the followers
+// Lead replicates logs by sending AppendEntries RPC in parallel
 func (rf *Raft) Lead() {
 	for i := range rf.peers {
 		if i == rf.myIdx {
@@ -293,7 +289,7 @@ func (rf *Raft) Lead() {
 	time.Sleep(time.Duration(HeartBeatIntervalMS) * time.Millisecond)
 }
 
-// Elect requests for a new election by the candidate
+// Elect starts a new election by sending requests of vote in parallel
 func (rf *Raft) Elect() {
 	log.Debug("Raft.startElection", "raft server %d starts the election!", rf.myIdx)
 	rf.mtx.Lock()
@@ -313,9 +309,12 @@ func (rf *Raft) Elect() {
 		}
 		go rf.sendRequestVote(i, &nVotes, &reqVoteArgs)
 	}
+
+	// pause for a random amount of time
+	time.Sleep(time.Duration(rf.getRandomTimeoutMS()) * time.Millisecond)
 }
 
-// Follow does follower's work to follow the leader / candidate
+// Follow waits for either leader's heartbeat or the election timeout
 func (rf *Raft) Follow() {
 	// check if a leader election should be started.
 	select {
@@ -350,21 +349,16 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) ticker() {
+func (rf *Raft) tick() {
 	for rf.killed() == false {
 		switch rf.state {
 		case Leader:
 			rf.Lead()
-			continue
 		case Candidate:
 			rf.Elect()
 		case Follower:
 			rf.Follow()
 		}
-
-		// pause for a random amount of time between 1 and 100 milliseconds.
-		randSleepMS := rand.Int63()%100 + 1
-		time.Sleep(time.Duration(randSleepMS) * time.Millisecond)
 	}
 }
 
@@ -404,6 +398,6 @@ func MakeRaft(peers []*labrpc.ClientEnd, myIdx int, persister *Persister, applyC
 	rf.readPersist(persister.ReadRaftState())
 
 	// start ticker goroutine to start elections
-	go rf.ticker()
+	go rf.tick()
 	return rf
 }
