@@ -9,6 +9,8 @@ package raft
 //
 
 import (
+	"flag"
+	"fmt"
 	"log"
 	"math/rand"
 	"sync"
@@ -508,13 +510,14 @@ func TestBackup2B(t *testing.T) {
 	cfg.connect((leader1 + 4) % nServers)
 
 	// lots of successful commands to new group.
+	// log.Println("[TestBackup2B] ============ 1 === begin === lots of successful commands to new group. ============")
 	for i := 0; i < 50; i++ {
 		cfg.one(rand.Int(), 3, true)
 	}
+	// log.Println("[TestBackup2B] ============ 1 === after === lots of successful commands to new group. ============")
 
 	// now another partitioned leader and one follower
 	leader2 := cfg.checkOneLeader()
-
 	other := (leader1 + 2) % nServers
 	if leader2 == other {
 		other = (leader2 + 1) % nServers
@@ -537,14 +540,17 @@ func TestBackup2B(t *testing.T) {
 	cfg.connect(other)
 
 	// lots of successful commands to new group.
+	// log.Println("[TestBackup2B] ============ 2 === begin === lots of successful commands to new group. ============")
 	for i := 0; i < 50; i++ {
 		cfg.one(rand.Int(), 3, true)
 	}
+	// log.Println("[TestBackup2B] ============ 2 === after === lots of successful commands to new group. ============")
 
 	// now everyone
 	for i := 0; i < nServers; i++ {
 		cfg.connect(i)
 	}
+	// log.Println("[TestBackup2B] before committing the last command......")
 	cfg.one(rand.Int(), nServers, true)
 	cfg.end()
 }
@@ -660,45 +666,47 @@ loop:
 }
 
 func TestPersist12C(t *testing.T) {
-	nServers := 3
-	cfg := makeConfig(t, nServers, false, false)
+	servers := 3
+	cfg := makeConfig(t, servers, false, false)
 	defer cfg.cleanup()
 
 	cfg.begin("Test (2C): basic persistence")
-	cfg.one(11, nServers, true)
 
-	// crash and restart all
-	for i := 0; i < nServers; i++ {
+	cfg.one(11, servers, true)
+
+	// crash and re-start all
+	for i := 0; i < servers; i++ {
 		cfg.start1(i, cfg.applier)
 	}
-	for i := 0; i < nServers; i++ {
+	for i := 0; i < servers; i++ {
 		cfg.disconnect(i)
 		cfg.connect(i)
 	}
-	cfg.one(12, nServers, true)
+
+	cfg.one(12, servers, true)
 
 	leader1 := cfg.checkOneLeader()
 	cfg.disconnect(leader1)
 	cfg.start1(leader1, cfg.applier)
 	cfg.connect(leader1)
 
-	cfg.one(13, nServers, true)
+	cfg.one(13, servers, true)
 
 	leader2 := cfg.checkOneLeader()
 	cfg.disconnect(leader2)
-	cfg.one(14, nServers-1, true)
+	cfg.one(14, servers-1, true)
 	cfg.start1(leader2, cfg.applier)
 	cfg.connect(leader2)
 
-	cfg.wait(4, nServers, -1) // wait for leader2 to join before killing i3
+	cfg.wait(4, servers, -1) // wait for leader2 to join before killing i3
 
-	i3 := (cfg.checkOneLeader() + 1) % nServers
+	i3 := (cfg.checkOneLeader() + 1) % servers
 	cfg.disconnect(i3)
-	cfg.one(15, nServers-1, true)
+	cfg.one(15, servers-1, true)
 	cfg.start1(i3, cfg.applier)
 	cfg.connect(i3)
 
-	cfg.one(16, nServers, true)
+	cfg.one(16, servers, true)
 
 	cfg.end()
 }
@@ -1254,6 +1262,85 @@ func TestSnapshotInit2D(t *testing.T) {
 	cfg.end()
 }
 
+// =====================================================================================================================
+// ==================================== ****** SELF-ADDED UNIT TESTS ****** ============================================
+// =====================================================================================================================
+
+func getRunFlag() string {
+	runFlag := flag.Lookup("test.run")
+	if runFlag != nil {
+		return runFlag.Value.String()
+	}
+	return ""
+}
+
+func testOne(cfg *config, testIdx int, cmd interface{}, expectedServers int) int {
+	t0 := time.Now()
+	startIdx := 0
+
+	// big loop may try to start an agreement several times
+	for time.Since(t0).Seconds() < 10 && cfg.checkFinished() == false {
+		// try all the servers, maybe one is the leader.
+		index := -1
+		for i := 0; i < cfg.n; i++ {
+			startIdx = (startIdx + 1) % cfg.n
+			var rf *Raft
+			cfg.mu.Lock()
+			if cfg.connected[startIdx] {
+				rf = cfg.rafts[startIdx]
+			}
+			cfg.mu.Unlock()
+			if rf != nil {
+				index1, _, isLeader := rf.StartAgreement(cmd)
+				if isLeader {
+					index = index1
+					break
+				}
+			}
+		}
+
+		if index != -1 {
+			// somebody claimed to be the leader and to have
+			// submitted our command; wait a while for agreement.
+			t1 := time.Now()
+			for time.Since(t1).Seconds() < 2 {
+				nd, cmd1 := cfg.nCommitted(index)
+				if nd > 0 && nd >= expectedServers {
+					// committed
+					if cmd1 == cmd {
+						// and it was the command we submitted.
+						return index
+					}
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+		} else {
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	if cfg.checkFinished() == false {
+		log.Printf("  ... one(%v) failed to reach agreement at [%d]\n", cmd, testIdx)
+	}
+	return -1
+}
+
+func testEnd(cfg *config, testIdx int) bool {
+	cfg.checkTimeout()
+	if cfg.t.Failed() == false {
+		cfg.mu.Lock()
+		t := time.Since(cfg.t0).Seconds()       // real time
+		nPeers := cfg.n                         // number of Raft peers
+		nRPC := cfg.rpcTotal() - cfg.rpcs0      // number of RPC sends
+		nBytes := cfg.bytesTotal() - cfg.bytes0 // number of bytes
+		nCmds := cfg.maxIndex - cfg.maxIndex0   // number of Raft agreements reported
+		cfg.mu.Unlock()
+
+		log.Printf("  ... Passed [%d] -- %4.1f  %d %4d %7d %4d\n", testIdx, t, nPeers, nRPC, nBytes, nCmds)
+		return true
+	}
+	return false
+}
+
 func TestOnlyOneElection2A(t *testing.T) {
 	nServers := 3
 	cfg := makeConfig(t, nServers, false, false)
@@ -1276,4 +1363,109 @@ func TestOnlyOneElection2A(t *testing.T) {
 		}
 	}
 	cfg.end()
+}
+
+func TestBackup2BConcurrent(t *testing.T) {
+	// this function can only be tested when specifying its function name explicitly
+	if getRunFlag() != t.Name() {
+		return
+	}
+
+	const ConcurrentTestNum = 100
+	var wg sync.WaitGroup
+	nPassed := 0
+	for i := 0; i < ConcurrentTestNum; i++ {
+		go func(wg *sync.WaitGroup, cnt *int, testIdx int) {
+			wg.Add(1)
+			defer wg.Done()
+
+			nServers := 5
+			cfg := makeConfig(t, nServers, false, false)
+			defer cfg.cleanup()
+
+			cfg.begin(fmt.Sprintf("Test (2B): leader backs up quickly over incorrect follower logs [%d]", testIdx))
+			if testOne(cfg, testIdx, rand.Int(), nServers) == -1 {
+				return
+			}
+
+			// put leader and one follower in a partition
+			leader1 := cfg.checkOneLeader()
+			// disconnect the servers in the other partition
+			cfg.disconnect((leader1 + 2) % nServers)
+			cfg.disconnect((leader1 + 3) % nServers)
+			cfg.disconnect((leader1 + 4) % nServers)
+
+			// submit lots of commands that won't commit, because the majority of servers are disconnected
+			for i := 0; i < 50; i++ {
+				cfg.rafts[leader1].StartAgreement(rand.Int())
+			}
+			time.Sleep(RaftElectionTimeout / 2)
+
+			cfg.disconnect((leader1 + 0) % nServers)
+			cfg.disconnect((leader1 + 1) % nServers)
+
+			// allow other partition to recover
+			cfg.connect((leader1 + 2) % nServers)
+			cfg.connect((leader1 + 3) % nServers)
+			cfg.connect((leader1 + 4) % nServers)
+
+			// lots of successful commands to new group.
+			for i := 0; i < 50; i++ {
+				//cfg.one(rand.Int(), 3, true)
+				if testOne(cfg, testIdx, rand.Int(), 3) == -1 {
+					return
+				}
+			}
+			// now another partitioned leader and one follower
+			leader2 := cfg.checkOneLeader()
+			other := (leader1 + 2) % nServers
+			if leader2 == other {
+				other = (leader2 + 1) % nServers
+			}
+			cfg.disconnect(other)
+
+			// lots more commands that won't commit
+			for i := 0; i < 50; i++ {
+				cfg.rafts[leader2].StartAgreement(rand.Int())
+			}
+			time.Sleep(RaftElectionTimeout / 2)
+
+			// bring original leader back to life
+			for i := 0; i < nServers; i++ {
+				cfg.disconnect(i)
+			}
+			cfg.connect((leader1 + 0) % nServers)
+			cfg.connect((leader1 + 1) % nServers)
+			cfg.connect(other)
+
+			// lots of successful commands to new group.
+			for i := 0; i < 50; i++ {
+				//cfg.one(rand.Int(), 3, true)
+				if testOne(cfg, testIdx, rand.Int(), 3) == -1 {
+					return
+				}
+			}
+
+			// now everyone
+			for i := 0; i < nServers; i++ {
+				cfg.connect(i)
+			}
+
+			if testOne(cfg, testIdx, rand.Int(), nServers) == -1 {
+				return
+			}
+			if testEnd(cfg, testIdx) {
+				*cnt++
+			}
+		}(&wg, &nPassed, i)
+		time.Sleep(time.Millisecond)
+	}
+
+	wg.Wait()
+	time.Sleep(time.Second * 5)
+	log.Printf("Passed %d tests\n", nPassed)
+
+	if nPassed != ConcurrentTestNum {
+		t.Fail()
+	}
 }
