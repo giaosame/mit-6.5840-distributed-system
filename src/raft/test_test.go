@@ -1253,3 +1253,27 @@ func TestSnapshotInit2D(t *testing.T) {
 	cfg.one(rand.Int(), servers, true)
 	cfg.end()
 }
+
+func TestOnlyOneElection2A(t *testing.T) {
+	nServers := 3
+	cfg := makeConfig(t, nServers, false, false)
+	defer cfg.cleanup()
+
+	cfg.begin("Test (2A): only one election should occur if no failures")
+	cfg.checkOneLeader()
+
+	time.Sleep(50 * time.Millisecond)
+	term1 := cfg.checkTerms()
+
+	iters := 10
+	for i := 0; i < iters; i++ {
+		cfg.checkOneLeader()
+		// does the leader+term stay the same if there is no network failure?
+		time.Sleep(2 * RaftElectionTimeout)
+		term2 := cfg.checkTerms()
+		if term1 != term2 {
+			cfg.t.Fatalf("term changed even though there were no failures")
+		}
+	}
+	cfg.end()
+}

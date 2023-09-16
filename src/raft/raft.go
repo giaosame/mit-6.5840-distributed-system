@@ -173,10 +173,10 @@ func (rf *Raft) AppendEntries(appendEntriesArgs *AppendEntriesArgs, appendEntrie
 		return
 	}
 
+	rf.sendHeartbeat()
 	rf.state = Follower
 	rf.votedFor = appendEntriesArgs.LeaderId
 	rf.currentTerm = appendEntriesArgs.Term
-	rf.sendHeartbeat()
 }
 
 // The labrpc package simulates a lossy network, in which servers
@@ -215,8 +215,9 @@ func (rf *Raft) sendRequestVote(serverIdx int, nVotes *int, reqVoteArgs *Request
 	if reqVoteReply.VoteGranted && rf.state == Candidate {
 		*nVotes++
 		if *nVotes > len(rf.peers)/2 {
-			log.Debug("sendRequestVote", "raft server %d becomes the leader", rf.myIdx)
+			log.Debug("sendRequestVote", "raft server %d becomes the leader in the term %d", rf.myIdx, rf.currentTerm)
 			rf.state = Leader
+			// go rf.lead()
 		}
 	}
 	rf.mtx.Unlock()
@@ -270,8 +271,8 @@ func (rf *Raft) StartAgreement(command interface{}) (int, int, bool) {
 	return index, term, isLeader
 }
 
-// Lead replicates logs by sending AppendEntries RPC in parallel
-func (rf *Raft) Lead() {
+// lead replicates logs by sending AppendEntries RPC in parallel
+func (rf *Raft) lead() {
 	for i := range rf.peers {
 		if i == rf.myIdx {
 			continue
@@ -289,9 +290,9 @@ func (rf *Raft) Lead() {
 	time.Sleep(time.Duration(HeartBeatIntervalMS) * time.Millisecond)
 }
 
-// Elect starts a new election by sending requests of vote in parallel
-func (rf *Raft) Elect() {
-	log.Debug("Raft.startElection", "raft server %d starts the election!", rf.myIdx)
+// elect starts a new election by sending requests of vote in parallel
+func (rf *Raft) elect() {
+	log.Debug("Raft.elect", "raft server %d starts the election!", rf.myIdx)
 	rf.mtx.Lock()
 	rf.currentTerm++
 	reqVoteArgs := RequestVoteArgs{
@@ -314,16 +315,18 @@ func (rf *Raft) Elect() {
 	time.Sleep(time.Duration(rf.getRandomTimeoutMS()) * time.Millisecond)
 }
 
-// Follow waits for either leader's heartbeat or the election timeout
-func (rf *Raft) Follow() {
+// follow waits for either leader's heartbeat or the election timeout
+func (rf *Raft) follow() {
 	// check if a leader election should be started.
 	select {
 	case <-rf.electionTimer.C:
 		rf.mtx.Lock()
 		rf.votedFor = rf.myIdx
 		rf.state = Candidate
-		rf.electionTimer.Reset(time.Duration(rf.getRandomTimeoutMS()) * time.Millisecond)
+		nextTimeout := rf.getRandomTimeoutMS()
+		rf.electionTimer.Reset(time.Duration(nextTimeout) * time.Millisecond)
 		rf.mtx.Unlock()
+		log.Debug("Raft.follow", "raft server %d has election timed out, next timeout in %d ms", rf.myIdx, nextTimeout)
 	case <-rf.heartbeatChan:
 		// log.Debug("Raft.startElection", "raft server %d received heartbeat from channel!", rf.myIdx)
 		break
@@ -353,11 +356,11 @@ func (rf *Raft) tick() {
 	for rf.killed() == false {
 		switch rf.state {
 		case Leader:
-			rf.Lead()
+			rf.lead()
 		case Candidate:
-			rf.Elect()
+			rf.elect()
 		case Follower:
-			rf.Follow()
+			rf.follow()
 		}
 	}
 }
