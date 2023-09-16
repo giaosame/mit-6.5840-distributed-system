@@ -208,16 +208,14 @@ func (rf *Raft) sendRequestVote(serverIdx int, nVotes *int, reqVoteArgs *Request
 
 	rf.mtx.Lock()
 	if reqVoteReply.Term > rf.currentTerm {
-		rf.currentTerm = reqVoteReply.Term
-		rf.state = Follower
-		rf.votedFor = NullCandidate
+		rf.demote(reqVoteReply.Term)
 	}
 	if reqVoteReply.VoteGranted && rf.state == Candidate {
 		*nVotes++
 		if *nVotes > len(rf.peers)/2 {
 			log.Debug("sendRequestVote", "raft server %d becomes the leader in the term %d", rf.myIdx, rf.currentTerm)
 			rf.state = Leader
-			// go rf.lead()
+			rf.sendHeartbeat()
 		}
 	}
 	rf.mtx.Unlock()
@@ -233,9 +231,7 @@ func (rf *Raft) sendAppendEntries(serverIdx int, appendEntriesArgs *AppendEntrie
 	rf.mtx.Lock()
 	if rf.currentTerm < appendEntriesReply.Term {
 		log.Debug("sendAppendEntries", "the leader %d is demoted because appendEntriesReply.Term > rf.currentTerm", rf.myIdx)
-		rf.currentTerm = appendEntriesReply.Term
-		rf.votedFor = NullCandidate
-		rf.state = Follower
+		rf.demote(appendEntriesReply.Term)
 	}
 	rf.mtx.Unlock()
 }
@@ -247,6 +243,16 @@ func (rf *Raft) sendHeartbeat() {
 	default:
 		// heart channel is full
 	}
+}
+
+func (rf *Raft) demote(newTerm int) {
+	if rf.state != Leader {
+		return
+	}
+	rf.state = Follower
+	rf.votedFor = NullCandidate
+	rf.currentTerm = newTerm
+	rf.electionTimer.Reset(time.Duration(rf.getRandomTimeoutMS()) * time.Millisecond)
 }
 
 // The service using Raft (e.g. a k/v server) wants to start
@@ -271,8 +277,9 @@ func (rf *Raft) StartAgreement(command interface{}) (int, int, bool) {
 	return index, term, isLeader
 }
 
-// lead replicates logs by sending AppendEntries RPC in parallel
+// lead replicates logs by sending AppendEntries RPCs in parallel
 func (rf *Raft) lead() {
+	// log.Debug("Raft.lead", "raft server %d begins to send AppendEntries RPCs", rf.myIdx)
 	for i := range rf.peers {
 		if i == rf.myIdx {
 			continue
@@ -311,8 +318,12 @@ func (rf *Raft) elect() {
 		go rf.sendRequestVote(i, &nVotes, &reqVoteArgs)
 	}
 
-	// pause for a random amount of time
-	time.Sleep(time.Duration(rf.getRandomTimeoutMS()) * time.Millisecond)
+	select {
+	case <-rf.electionTimer.C:
+		rf.electionTimer.Reset(time.Duration(rf.getRandomTimeoutMS()) * time.Millisecond)
+	case <-rf.heartbeatChan:
+		break
+	}
 }
 
 // follow waits for either leader's heartbeat or the election timeout
@@ -323,14 +334,12 @@ func (rf *Raft) follow() {
 		rf.mtx.Lock()
 		rf.votedFor = rf.myIdx
 		rf.state = Candidate
-		nextTimeout := rf.getRandomTimeoutMS()
-		rf.electionTimer.Reset(time.Duration(nextTimeout) * time.Millisecond)
 		rf.mtx.Unlock()
-		log.Debug("Raft.follow", "raft server %d has election timed out, next timeout in %d ms", rf.myIdx, nextTimeout)
+		log.Debug("Raft.follow", "raft server %d has election timed out", rf.myIdx)
 	case <-rf.heartbeatChan:
-		// log.Debug("Raft.startElection", "raft server %d received heartbeat from channel!", rf.myIdx)
 		break
 	}
+	rf.electionTimer.Reset(time.Duration(rf.getRandomTimeoutMS()) * time.Millisecond)
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,

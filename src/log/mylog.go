@@ -2,7 +2,7 @@ package log
 
 /*
  * Refer to https://blog.josejg.com/debugging-pretty/
- * e.g. VERBOSE=0 go test -run 2A to disable logging
+ * e.g. to disable logging: VERBOSE=0 go test -run 2A
  */
 
 import (
@@ -10,12 +10,14 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"time"
 )
 
 var verbose int
 
 func init() {
 	verbose = 1
+	log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
 
 	verboseEnvStr := os.Getenv("VERBOSE")
 	if verboseEnvStr != "" {
@@ -31,8 +33,20 @@ func init() {
 	}
 }
 
-func Debug(funcName string, format string, args ...interface{}) {
+func myPrint(prefix string, format string, args ...interface{}) {
 	if verbose == 1 {
-		log.Printf(fmt.Sprintf("[%s] ", funcName)+format, args...)
+		t := time.Now().UnixMilli()
+		prefixWithTime := fmt.Sprintf("@%d %s ", t, prefix)
+		log.Printf(fmt.Sprintf(prefixWithTime+format, args...))
 	}
+}
+
+func Debug(funcName string, format string, args ...interface{}) {
+	prefix := fmt.Sprintf("DEBUG [%s]", funcName)
+	myPrint(prefix, format, args...)
+}
+
+func Error(funcName string, format string, args ...interface{}) {
+	prefix := fmt.Sprintf("ERROR [%s] ", funcName)
+	myPrint(prefix, format, args...)
 }
