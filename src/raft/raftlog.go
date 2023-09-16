@@ -39,4 +39,5 @@ func (rf *Raft) getLogLen() int {
 // pushBack pushes the given LogEntries to the end of log
 func (rf *Raft) pushBack(es ...LogEntry) {
 	rf.logs = append(rf.logs, es...)
+	// log.Debug("Raft.pushback", "rf.logs: %+v", rf.logs)
 }

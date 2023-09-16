@@ -87,15 +87,6 @@ type Raft struct {
 	matchIndices []int // for each server, index of the highest log entry known to be replicated on server
 }
 
-// GetState returns currentTerm and whether this server believes it is the leader.
-func (rf *Raft) GetState() (int, bool) {
-	rf.mtx.Lock()
-	defer rf.mtx.Unlock()
-	term := rf.currentTerm
-	isLeader := rf.state == Leader
-	return term, isLeader
-}
-
 // save Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
@@ -144,7 +135,7 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 }
 
 // RequestVote is invoked by candidates to gather votes
-func (rf *Raft) RequestVote(reqVoteArgs *RequestVoteArgs, reqVoteReply *RequestVoteReply) { // TODO: 2B
+func (rf *Raft) RequestVote(reqVoteArgs *RequestVoteArgs, reqVoteReply *RequestVoteReply) {
 	log.Debug("Raft.RequestVote", "raft server %d receives the request of vote: %+v", rf.myIdx, *reqVoteArgs)
 	rf.mtx.Lock()
 	defer rf.mtx.Unlock()
@@ -154,7 +145,7 @@ func (rf *Raft) RequestVote(reqVoteArgs *RequestVoteArgs, reqVoteReply *RequestV
 		return
 	}
 	if rf.moreUpToDate(reqVoteArgs.LastLogTerm, reqVoteArgs.LastLogIndex) {
-		log.Debug("Raft.RequestVote", "lastLog={%+v}, args.LastLogTerm=%d, args.LastLogIndex=%d", *rf.getLastLogEntry(), reqVoteArgs.LastLogTerm, reqVoteArgs.LastLogIndex)
+		// log.Debug("Raft.RequestVote", "lastLog={%+v}, args.LastLogTerm=%d, args.LastLogIndex=%d", *rf.getLastLogEntry(), reqVoteArgs.LastLogTerm, reqVoteArgs.LastLogIndex)
 		return
 	}
 
@@ -171,7 +162,7 @@ func (rf *Raft) RequestVote(reqVoteArgs *RequestVoteArgs, reqVoteReply *RequestV
 
 // AppendEntries is invoked by candidates to gather votes
 func (rf *Raft) AppendEntries(appendEntriesArgs *AppendEntriesArgs, appendEntriesReply *AppendEntriesReply) {
-	log.Debug("Raft.AppendEntries", "raft server %d receives heartbeat", rf.myIdx)
+	log.Debug("Raft.AppendEntries", "raft server %d receives heartbeat: %+v", rf.myIdx, appendEntriesArgs)
 	rf.mtx.Lock()
 	defer rf.mtx.Unlock()
 
@@ -193,19 +184,19 @@ func (rf *Raft) AppendEntries(appendEntriesArgs *AppendEntriesArgs, appendEntrie
 	}
 	// append any new entries to the logs
 	if len(appendEntriesArgs.Entries) > 0 {
-		log.Debug("Raft.AppendEntries", "len(args.Entries) > 0 for the raft server %d, entries = %+v", rf.myIdx, appendEntriesArgs.Entries)
+		// log.Debug("Raft.AppendEntries", "len(args.Entries) > 0 for the raft server %d, entries = %+v", rf.myIdx, appendEntriesArgs.Entries)
 		rf.pushBack(appendEntriesArgs.Entries...)
 	}
 
 	if appendEntriesArgs.LeaderCommit > rf.commitIndex {
-		log.Debug("Raft.AppendEntries", "args.LeaderCommit{%d} > rf.commitIndex{%d} for the raft server %d", appendEntriesArgs.LeaderCommit, rf.commitIndex, rf.myIdx)
+		// log.Debug("Raft.AppendEntries", "args.LeaderCommit{%d} > rf.commitIndex{%d} for the raft server %d", appendEntriesArgs.LeaderCommit, rf.commitIndex, rf.myIdx)
 		rf.commitIndex = common.Min(appendEntriesArgs.LeaderCommit, rf.getLogLen()-1)
 	}
 	for rf.commitIndex > rf.lastApplied {
 		rf.lastApplied++
 		appliedEntry := rf.logs[rf.lastApplied]
-		rf.sendApplyMsg(appliedEntry.Command, appliedEntry.Idx)
-		//time.Sleep(ApplyMsgIntervalMS * time.Millisecond)
+		go rf.sendApplyMsg(appliedEntry.Command, appliedEntry.Idx)
+		// time.Sleep(ApplyMsgIntervalMS * time.Millisecond)
 	}
 
 	rf.passHeartbeat()
@@ -232,9 +223,9 @@ func (rf *Raft) AppendEntries(appendEntriesArgs *AppendEntriesArgs, appendEntrie
 // in structs passed over RPC, and that the caller passes the address of the reply struct with &,
 // not the struct itself.
 //
-// sendRequestVoteAsync sends a RequestVote RPC to a server.
+// sendRequestVote sends a RequestVote RPC to a server.
 // serverIdx is the index of the target server in rf.peers[].
-func (rf *Raft) sendRequestVoteAsync(serverIdx int, nVotes *int, reqVoteArgs *RequestVoteArgs) {
+func (rf *Raft) sendRequestVote(serverIdx int, nVotes *int, reqVoteArgs *RequestVoteArgs) {
 	reqVoteReply := &RequestVoteReply{}
 	ok := rf.peers[serverIdx].Call("Raft.RequestVote", reqVoteArgs, reqVoteReply)
 	if !ok {
@@ -248,7 +239,7 @@ func (rf *Raft) sendRequestVoteAsync(serverIdx int, nVotes *int, reqVoteArgs *Re
 	if reqVoteReply.VoteGranted && rf.state == Candidate {
 		*nVotes++
 		if *nVotes > len(rf.peers)/2 {
-			log.Debug("Raft.sendRequestVoteAsync", "raft server %d becomes the leader", rf.myIdx)
+			log.Debug("Raft.sendRequestVote", "raft server %d becomes the leader", rf.myIdx)
 			rf.promote()
 			rf.passHeartbeat()
 		}
@@ -256,7 +247,7 @@ func (rf *Raft) sendRequestVoteAsync(serverIdx int, nVotes *int, reqVoteArgs *Re
 	rf.mtx.Unlock()
 }
 
-func (rf *Raft) sendAppendEntriesAsync(serverIdx int, appendEntriesArgs *AppendEntriesArgs) {
+func (rf *Raft) sendAppendEntries(serverIdx int, appendEntriesArgs *AppendEntriesArgs) {
 	prevLogIndex := appendEntriesArgs.PrevLogIndex
 	var appendEntriesReply *AppendEntriesReply
 	for {
@@ -271,7 +262,7 @@ func (rf *Raft) sendAppendEntriesAsync(serverIdx int, appendEntriesArgs *AppendE
 
 		rf.mtx.Lock()
 		if rf.currentTerm < appendEntriesReply.Term {
-			log.Debug("Raft.sendAppendEntriesAsync", "the leader %d is demoted because appendEntriesReply.Term > rf.currentTerm", rf.myIdx)
+			log.Debug("Raft.sendAppendEntries", "the leader %d is demoted because appendEntriesReply.Term > rf.currentTerm", rf.myIdx)
 			rf.demote(appendEntriesReply.Term)
 			rf.mtx.Unlock()
 			return
@@ -341,7 +332,7 @@ func (rf *Raft) getRandomTimeoutMS() int {
 
 // updateCommitIndex is used by the leader to update its own commitIndex
 func (rf *Raft) updateCommitIndex() {
-	log.Debug("Raft.updateCommitIndex", "raft server %d tries to update the commitIndex", rf.myIdx)
+	log.Debug("Raft.updateCommitIndex", "leader %d tries to update the commitIndex", rf.myIdx)
 	// If there exists an N such that N > commitIndex,
 	// a majority of matchIndex[i] ≥ N, and log[N].term == currentTerm: set commitIndex = N
 	rf.mtx.Lock()
@@ -373,10 +364,6 @@ func (rf *Raft) updateCommitIndex() {
 	}
 }
 
-func (rf *Raft) sendAppendEntries() {
-
-}
-
 // lead replicates logs by sending AppendEntries RPC in parallel
 func (rf *Raft) lead() {
 	for i := range rf.peers {
@@ -398,8 +385,9 @@ func (rf *Raft) lead() {
 		}
 		rf.mtx.Unlock()
 
-		go rf.sendAppendEntriesAsync(i, &appendEntriesArgs)
+		go rf.sendAppendEntries(i, &appendEntriesArgs)
 	}
+
 	time.Sleep(time.Duration(HeartBeatIntervalMS) * time.Millisecond)
 	rf.updateCommitIndex()
 }
@@ -423,7 +411,7 @@ func (rf *Raft) elect() {
 		if i == rf.myIdx {
 			continue
 		}
-		go rf.sendRequestVoteAsync(i, &nVotes, &reqVoteArgs)
+		go rf.sendRequestVote(i, &nVotes, &reqVoteArgs)
 	}
 
 	select {
@@ -472,6 +460,15 @@ func (rf *Raft) killed() bool {
 // ====================================== ****** PUBLIC FUNCTIONS ****** ===============================================
 // =====================================================================================================================
 
+// GetState returns currentTerm and whether this server believes it is the leader.
+func (rf *Raft) GetState() (int, bool) {
+	rf.mtx.Lock()
+	defer rf.mtx.Unlock()
+	term := rf.currentTerm
+	isLeader := rf.state == Leader
+	return term, isLeader
+}
+
 // the tester doesn't halt goroutines created by Raft after each test,
 // but it does call the Kill() method. your code can use killed() to
 // check whether Kill() has been called. the use of atomic avoids the
@@ -501,7 +498,7 @@ func (rf *Raft) Kill() {
 func (rf *Raft) StartAgreement(command interface{}) (int, int, bool) {
 	rf.mtx.Lock()
 	defer rf.mtx.Unlock()
-	if rf.state == Leader {
+	if rf.state != Leader {
 		return -1, -1, false
 	}
 
@@ -513,7 +510,7 @@ func (rf *Raft) StartAgreement(command interface{}) (int, int, bool) {
 		Command: command,
 	}
 	rf.pushBack(entry)
-	log.Debug("rf.StartAgreement", "rf.logs = %+v", rf.logs)
+	log.Debug("rf.StartAgreement", "leader %d starts to do agreement on %+v", rf.myIdx, entry)
 
 	rf.nextIndices[rf.myIdx] = rf.getLogLen()
 	rf.matchIndices[rf.myIdx] = rf.getLogLen() - 1
