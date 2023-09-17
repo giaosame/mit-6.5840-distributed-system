@@ -66,7 +66,7 @@ type Raft struct {
 	myIdx     int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
 
-	// TODO: 2B, 2C. Look at the paper's Figure 2 for a description of what state a Raft server must maintain.
+	// TODO: 2C. Look at the paper's Figure 2 for a description of what state a Raft server must maintain.
 	rand          *rand.Rand // random number source
 	electionTimer *time.Timer
 	heartbeatChan chan struct{} // a channel to receive heartbeat from the leader
@@ -192,11 +192,10 @@ func (rf *Raft) AppendEntries(appendEntriesArgs *AppendEntriesArgs, appendEntrie
 		// log.Debug("Raft.AppendEntries", "args.LeaderCommit{%d} > rf.commitIndex{%d} for the raft server %d", appendEntriesArgs.LeaderCommit, rf.commitIndex, rf.myIdx)
 		rf.commitIndex = common.Min(appendEntriesArgs.LeaderCommit, rf.getLogLen()-1)
 	}
-	for rf.commitIndex > rf.lastApplied {
-		rf.lastApplied++
-		appliedEntry := rf.logs[rf.lastApplied]
-		go rf.sendApplyMsg(appliedEntry.Command, appliedEntry.Idx)
-		// time.Sleep(ApplyMsgIntervalMS * time.Millisecond)
+	if rf.commitIndex > rf.lastApplied {
+		appliedLogs := rf.logs[rf.lastApplied : rf.commitIndex+1]
+		rf.lastApplied = rf.commitIndex
+		go rf.sendApplyMsg(appliedLogs)
 	}
 
 	rf.passHeartbeat()
@@ -289,11 +288,13 @@ func (rf *Raft) sendAppendEntries(serverIdx int, appendEntriesArgs *AppendEntrie
 	}
 }
 
-func (rf *Raft) sendApplyMsg(command interface{}, index int) {
-	rf.applyChan <- ApplyMsg{
-		CommandValid: true,
-		Command:      command,
-		CommandIndex: index,
+func (rf *Raft) sendApplyMsg(applyLogs []LogEntry) {
+	for _, applyLog := range applyLogs {
+		rf.applyChan <- ApplyMsg{
+			CommandValid: true,
+			Command:      applyLog.Command,
+			CommandIndex: applyLog.Idx,
+		}
 	}
 }
 
@@ -359,8 +360,7 @@ func (rf *Raft) updateCommitIndex() {
 	if rf.commitIndex > rf.lastApplied {
 		// log.Debug("Raft.updateCommitIndex", "logs of leader(%d): %+v", rf.myIdx, rf.logs)
 		rf.lastApplied++
-		appliedEntry := rf.logs[rf.lastApplied]
-		go rf.sendApplyMsg(appliedEntry.Command, appliedEntry.Idx)
+		go rf.sendApplyMsg([]LogEntry{rf.logs[rf.lastApplied]})
 	}
 }
 
