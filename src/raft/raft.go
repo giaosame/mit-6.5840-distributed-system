@@ -141,21 +141,23 @@ func (rf *Raft) RequestVote(reqVoteArgs *RequestVoteArgs, reqVoteReply *RequestV
 	defer rf.mtx.Unlock()
 
 	if rf.currentTerm > reqVoteArgs.Term {
+		log.Debug("Raft.RequestVote", "rf.currentTerm(%d) > reqVoteArgs.Term(%d)", rf.currentTerm, reqVoteArgs.Term)
 		reqVoteReply.Term = rf.currentTerm
 		return
 	}
-	if rf.moreUpToDate(reqVoteArgs.LastLogTerm, reqVoteArgs.LastLogIndex) {
-		// log.Debug("Raft.RequestVote", "lastLog={%+v}, args.LastLogTerm=%d, args.LastLogIndex=%d", *rf.getLastLogEntry(), reqVoteArgs.LastLogTerm, reqVoteArgs.LastLogIndex)
-		return
-	}
 
-	reqVoteReply.Term = reqVoteArgs.Term
 	if rf.currentTerm < reqVoteArgs.Term || rf.votedFor == NullCandidate || rf.votedFor == reqVoteArgs.CandidateId {
 		log.Debug("Raft.RequestVote", "raft server %d voted for %d previously, votes for the candidate %d", rf.myIdx, rf.votedFor, reqVoteArgs.CandidateId)
+		rf.demote(reqVoteArgs.Term)
+
+		if rf.moreUpToDate(reqVoteArgs.LastLogTerm, reqVoteArgs.LastLogIndex) {
+			log.Debug("Raft.RequestVote", "moreUpToDate: lastLog={%+v}, args.LastLogTerm=%d, args.LastLogIndex=%d", *rf.getLastLogEntry(), reqVoteArgs.LastLogTerm, reqVoteArgs.LastLogIndex)
+			return
+		}
+
+		// candidate’s log is at least as up-to-date as receiver’s log
 		rf.passHeartbeat()
-		rf.state = Follower
 		rf.votedFor = reqVoteArgs.CandidateId
-		rf.currentTerm = reqVoteArgs.Term
 		reqVoteReply.VoteGranted = true
 	}
 }
@@ -179,12 +181,12 @@ func (rf *Raft) AppendEntries(appendEntriesArgs *AppendEntriesArgs, appendEntrie
 	// check if an existing entry conflicts with a new one (same index but different terms),
 	// delete the existing entry and all that follow it
 	if prevLogIndex+1 < rf.getLogLen() {
-		// log.Debug("Raft.AppendEntries", "prevLogIndex+1 < rf.getLogLen() for the raft server %d", rf.myIdx)
+		log.Debug("Raft.AppendEntries", "prevLogIndex+1 < rf.getLogLen() for the raft server %d", rf.myIdx)
 		rf.logs = rf.logs[:prevLogIndex+1]
 	}
 	// append any new entries to the logs
 	if len(appendEntriesArgs.Entries) > 0 {
-		// log.Debug("Raft.AppendEntries", "len(args.Entries) > 0 for the raft server %d, entries = %+v", rf.myIdx, appendEntriesArgs.Entries)
+		log.Debug("Raft.AppendEntries", "len(args.Entries) > 0 for the raft server %d, entries = %+v", rf.myIdx, appendEntriesArgs.Entries)
 		rf.pushBack(appendEntriesArgs.Entries...)
 	}
 
@@ -193,9 +195,8 @@ func (rf *Raft) AppendEntries(appendEntriesArgs *AppendEntriesArgs, appendEntrie
 		rf.commitIndex = common.Min(appendEntriesArgs.LeaderCommit, rf.getLogLen()-1)
 	}
 	if rf.commitIndex > rf.lastApplied {
-		appliedLogs := rf.logs[rf.lastApplied : rf.commitIndex+1]
+		go rf.sendApplyMsg(rf.lastApplied, rf.commitIndex)
 		rf.lastApplied = rf.commitIndex
-		go rf.sendApplyMsg(appliedLogs)
 	}
 
 	rf.passHeartbeat()
@@ -288,12 +289,14 @@ func (rf *Raft) sendAppendEntries(serverIdx int, appendEntriesArgs *AppendEntrie
 	}
 }
 
-func (rf *Raft) sendApplyMsg(applyLogs []LogEntry) {
-	for _, applyLog := range applyLogs {
+func (rf *Raft) sendApplyMsg(start, end int) {
+	rf.mtx.Lock()
+	defer rf.mtx.Unlock()
+	for i := start; i <= end; i++ {
 		rf.applyChan <- ApplyMsg{
 			CommandValid: true,
-			Command:      applyLog.Command,
-			CommandIndex: applyLog.Idx,
+			Command:      rf.logs[i].Command,
+			CommandIndex: rf.logs[i].Idx,
 		}
 	}
 }
@@ -318,13 +321,12 @@ func (rf *Raft) promote() {
 
 // demote demotes the leader itself to be a follower
 func (rf *Raft) demote(newTerm int) {
-	if rf.state != Leader {
-		return
+	if rf.state != Follower {
+		rf.electionTimer.Reset(time.Duration(rf.getRandomTimeoutMS()) * time.Millisecond)
 	}
 	rf.state = Follower
 	rf.votedFor = NullCandidate
 	rf.currentTerm = newTerm
-	rf.electionTimer.Reset(time.Duration(rf.getRandomTimeoutMS()) * time.Millisecond)
 }
 
 func (rf *Raft) getRandomTimeoutMS() int {
@@ -360,7 +362,7 @@ func (rf *Raft) updateCommitIndex() {
 	if rf.commitIndex > rf.lastApplied {
 		// log.Debug("Raft.updateCommitIndex", "logs of leader(%d): %+v", rf.myIdx, rf.logs)
 		rf.lastApplied++
-		go rf.sendApplyMsg([]LogEntry{rf.logs[rf.lastApplied]})
+		go rf.sendApplyMsg(rf.lastApplied, rf.lastApplied)
 	}
 }
 
