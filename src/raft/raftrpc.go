@@ -16,12 +16,12 @@ type RequestVoteReply struct {
 
 // AppendEntriesArgs represents AppendEntries RPC arguments structure
 type AppendEntriesArgs struct {
-	Term         int           // leader’s term
-	LeaderId     int           // so follower can redirect clients
-	PrevLogIndex int           // index of log entry immediately preceding new ones
-	PrevLogTerm  int           // term of prevLogIndex entry
-	LeaderCommit int           // leader’s commitIndex
-	Entries      []interface{} // log entries to store (empty for heartbeat; may send more than one for efficiency)
+	Term         int        // leader’s term
+	LeaderId     int        // so follower can redirect clients
+	PrevLogIndex int        // index of log entry immediately preceding new ones
+	PrevLogTerm  int        // term of prevLogIndex entry
+	LeaderCommit int        // leader’s commitIndex
+	Entries      []LogEntry // log entries to store (empty for heartbeat; may send more than one for efficiency)
 }
 
 // AppendEntriesReply represents AppendEntries RPC reply structure
