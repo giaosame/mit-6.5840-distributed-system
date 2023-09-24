@@ -6,28 +6,27 @@ package raft
 //
 // rf = MakeRaft(...)
 //   create a new Raft server.
-// rf.Start(command interface{}) (index, term, isleader)
+// rf.Start(command interface{}) (index, term, isLeader)
 //   start agreement on a new log entry
 // rf.GetState() (term, isLeader)
 //   ask a Raft for its current term, and whether it thinks it is leader
 // ApplyMsg
 //   each time a new entry is committed to the log, each Raft peer
-//   should send an ApplyMsg to the service (or tester)
-//   in the same server.
+//   should send an ApplyMsg to the service (or tester) in the same server.
 //
 
 import (
-	"6.5840/common"
-	"6.5840/log"
-
-	//	"bytes"
+	"bytes"
+	"errors"
 	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	//	"6.5840/labgob"
+	"6.5840/common"
+	"6.5840/labgob"
 	"6.5840/labrpc"
+	"6.5840/log"
 )
 
 // Raft state
@@ -37,15 +36,12 @@ const (
 	Leader
 )
 
-// as each Raft peer becomes aware that successive log entries are
-// committed, the peer should send an ApplyMsg to the service (or
-// tester) on the same server, via the applyCh passed to Make(). set
-// CommandValid to true to indicate that the ApplyMsg contains a newly
-// committed log entry.
+// ApplyMsg will be sent by each Raft peer to the service (or tester) on the same server,
+// when the peer becomes aware that successive log entries are committed, via the applyCh passed to Make().
+// Set CommandValid to true to indicate that the ApplyMsg contains a newly committed log entry.
 //
-// in part 2D you'll want to send other kinds of messages (e.g.,
-// snapshots) on the applyCh, but set CommandValid to false for these
-// other uses.
+// in part 2D you'll want to send other kinds of messages (e.g., snapshots) on the applyCh,
+// but set CommandValid to false for these other uses.
 type ApplyMsg struct {
 	CommandValid bool
 	Command      interface{}
@@ -87,22 +83,56 @@ type Raft struct {
 	matchIndices []int // for each server, index of the highest log entry known to be replicated on server
 }
 
-// save Raft's persistent state to stable storage,
+// persist saves Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
-// before you've implemented snapshots, you should pass nil as the
-// second argument to persister.Save().
-// after you've implemented snapshots, pass the current snapshot
-// (or nil if there's not yet a snapshot).
+// before you've implemented snapshots, you should pass nil as the second argument to persister.Save().
+// after you've implemented snapshots, pass the current snapshot (or nil if there's not yet a snapshot).
 func (rf *Raft) persist() {
-	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// raftstate := w.Bytes()
-	// rf.persister.Save(raftstate, nil)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+
+	if err := rf.encode(e); err != nil {
+		log.Error("rf.persist", "raft server %d %v", rf.myIdx, err)
+		return
+	}
+	log.Debug("raft.persist", "raft server %d encoded persistent state: %s", rf.myIdx, rf.getPersistentState())
+	raftState := w.Bytes()
+	rf.persister.Save(raftState, nil)
+}
+
+// encode encodes the persistent state of this raft server
+func (rf *Raft) encode(e *labgob.LabEncoder) error {
+	if err := e.Encode(rf.state); err != nil {
+		return errors.New("failed to encode state: " + err.Error())
+	}
+	if err := e.Encode(rf.currentTerm); err != nil {
+		return errors.New("failed to encode currentTerm: " + err.Error())
+	}
+	if err := e.Encode(rf.votedFor); err != nil {
+		return errors.New("failed to encode votedFor: " + err.Error())
+	}
+	if err := e.Encode(rf.logs); err != nil {
+		return errors.New("failed to encode logs: " + err.Error())
+	}
+	return nil
+}
+
+// decode decodes the persistent state of this raft server
+func (rf *Raft) decode(d *labgob.LabDecoder) error {
+	if err := d.Decode(&rf.state); err != nil {
+		return errors.New("failed to decode state: " + err.Error())
+	}
+	if err := d.Decode(&rf.currentTerm); err != nil {
+		return errors.New("failed to decode currentTerm: " + err.Error())
+	}
+	if err := d.Decode(&rf.votedFor); err != nil {
+		return errors.New("failed to decode votedFor: " + err.Error())
+	}
+	if err := d.Decode(&rf.logs); err != nil {
+		return errors.New("failed to decode logs: " + err.Error())
+	}
+	return nil
 }
 
 // restore previously persisted state.
@@ -110,19 +140,14 @@ func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
-	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := labgob.NewDecoder(r)
-	// var xxx
-	// var yyy
-	// if d.Decode(&xxx) != nil ||
-	//    d.Decode(&yyy) != nil {
-	//   error...
-	// } else {
-	//   rf.xxx = xxx
-	//   rf.yyy = yyy
-	// }
+
+	buf := bytes.NewBuffer(data)
+	d := labgob.NewDecoder(buf)
+	if err := rf.decode(d); err != nil {
+		log.Error("[rf.readPersist]", "raft server %d %v", rf.myIdx, err)
+	}
+	log.Debug("raft.readPersist", "raft server %d reads persistent state from decoder: %s",
+		rf.myIdx, rf.getPersistentState())
 }
 
 // the service says it has created a snapshot that has
@@ -130,7 +155,7 @@ func (rf *Raft) readPersist(data []byte) {
 // service no longer needs the log through (and including)
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (2D).
+	// TODO: Your code here (2D).
 
 }
 
@@ -158,6 +183,7 @@ func (rf *Raft) RequestVote(reqVoteArgs *RequestVoteArgs, reqVoteReply *RequestV
 		// candidate’s log is at least as up-to-date as receiver’s log
 		rf.passHeartbeat()
 		rf.votedFor = reqVoteArgs.CandidateId
+		rf.persist()
 		reqVoteReply.VoteGranted = true
 	}
 }
@@ -313,6 +339,7 @@ func (rf *Raft) passHeartbeat() {
 // promote promotes the candidate itself to be the leader
 func (rf *Raft) promote() {
 	rf.state = Leader
+	rf.persist()
 	for i := range rf.peers {
 		rf.nextIndices[i] = rf.getLogLen()
 		rf.matchIndices[i] = 0
@@ -327,6 +354,7 @@ func (rf *Raft) demote(newTerm int) {
 	rf.state = Follower
 	rf.votedFor = NullCandidate
 	rf.currentTerm = newTerm
+	rf.persist()
 }
 
 func (rf *Raft) getRandomTimeoutMS() int {
@@ -399,6 +427,7 @@ func (rf *Raft) elect() {
 	log.Debug("Raft.elect", "raft server %d starts the election!", rf.myIdx)
 	rf.mtx.Lock()
 	rf.currentTerm++
+	rf.persist()
 	lastLog := rf.getLastLogEntry()
 	reqVoteArgs := RequestVoteArgs{
 		Term:         rf.currentTerm,
@@ -442,7 +471,11 @@ func (rf *Raft) follow() {
 
 func (rf *Raft) tick() {
 	for rf.killed() == false {
-		switch rf.state {
+		rf.mtx.Lock()
+		state := rf.state
+		rf.mtx.Unlock()
+
+		switch state {
 		case Leader:
 			rf.lead()
 		case Candidate:
