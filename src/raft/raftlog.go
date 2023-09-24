@@ -1,5 +1,7 @@
 package raft
 
+import "fmt"
+
 type LogEntry struct {
 	Idx     int // index to identify its position in the log
 	Term    int
@@ -39,5 +41,9 @@ func (rf *Raft) getLogLen() int {
 // pushBack pushes the given LogEntries to the end of log
 func (rf *Raft) pushBack(es ...LogEntry) {
 	rf.logs = append(rf.logs, es...)
-	// log.Debug("Raft.pushback", "rf.logs: %+v", rf.logs)
+	rf.persist()
+}
+
+func (rf *Raft) getPersistentState() string {
+	return fmt.Sprintf("state=%d, term=%d, votedFor=%d, logs=%+v", rf.state, rf.currentTerm, rf.votedFor, rf.logs)
 }

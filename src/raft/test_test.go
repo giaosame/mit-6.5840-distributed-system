@@ -519,7 +519,7 @@ func TestBackup2B(t *testing.T) {
 
 	// now another partitioned leader and one follower
 	leader2 := cfg.checkOneLeader()
-	log.Printf("[TestBackup2B] leader2 = %d\n", leader2)
+	// log.Printf("[TestBackup2B] leader2 = %d\n", leader2)
 	other := (leader1 + 2) % nServers
 	if leader2 == other {
 		other = (leader2 + 1) % nServers
